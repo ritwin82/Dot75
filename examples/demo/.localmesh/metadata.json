@@ -1,0 +1,4 @@
+[
+  { "relation": "public.orders", "estimatedRows": 2500000, "bytes": 1900000000, "indexes": ["orders_pkey"] },
+  { "relation": "public.users", "estimatedRows": 400000, "bytes": 280000000, "indexes": ["users_pkey", "users_email_key"] }
+]

@@ -1,0 +1,6 @@
+version: 1
+mappings:
+  - template: users
+    bindings: { table: public.users, id: id, identity: email, created_at: created_at }
+  - template: orders
+    bindings: { table: public.orders, id: id, customer_id: user_id, status: status }
