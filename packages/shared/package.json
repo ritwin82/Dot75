@@ -1,0 +1,9 @@
+{
+  "name": "@localmesh/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" },
+  "dependencies": { "js-yaml": "^4.1.0", "zod": "^4.1.5" },
+  "devDependencies": { "@types/js-yaml": "^4.0.9" }
+}

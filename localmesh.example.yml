@@ -1,0 +1,20 @@
+version: 1
+postgres:
+  version: "16"
+  extensions: []
+migrations:
+  directory: db/migrations
+  up_pattern: "*.up.sql"
+  down_pattern: "*.down.sql"
+contracts:
+  mappings_file: .localmesh/contracts.yml
+  fixtures_directory: .localmesh/fixtures
+checks:
+  compare_open_pull_requests: true
+  verify_rollback: true
+  require_data_contracts: false
+performance:
+  metadata_file: .localmesh/metadata.json
+ai:
+  provider: ollama
+  model: qwen2.5-coder:7b
