@@ -31,7 +31,7 @@ services:
   web:
     build: { context: ., dockerfile: apps/web/Dockerfile }
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:4100
+      NEXT_PUBLIC_API_URL: http://api:4100
     ports: ["3000:3000"]
     depends_on: [api]
 volumes:

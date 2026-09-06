@@ -11,7 +11,7 @@ await server.register(cors,{origin:process.env.WEB_ORIGIN??"http://localhost:300
 server.addContentTypeParser("application/json",{parseAs:"buffer"},(_request,body,done)=>done(null,body));
 
 const databaseUrl=process.env.DATABASE_URL;if(!databaseUrl)throw new Error("DATABASE_URL is required");
-await ensureSchema(); const boss=new PgBoss({connectionString:databaseUrl}); await boss.start();
+await ensureSchema(); const boss=new PgBoss({connectionString:databaseUrl}); await boss.start(); await boss.createQueue("validate-pr");
 
 server.get("/health",async()=>({status:"ok",service:"localmesh-api"}));
 server.get("/api/jobs",async(request)=>{const query=request.query as {limit?:string};return {jobs:await listJobs(Number(query.limit??50))};});

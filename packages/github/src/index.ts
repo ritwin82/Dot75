@@ -1,6 +1,6 @@
 import {createHmac,timingSafeEqual} from "node:crypto";
 import {App} from "@octokit/app";
-import type {Octokit} from "@octokit/rest";
+import {Octokit} from "@octokit/rest";
 import type {Finding,MigrationFile,OrderResult,ValidationResult} from "@localmesh/shared";
 
 export function verifyWebhookSignature(raw:Buffer,signature:string|undefined,secret:string):boolean {
@@ -15,7 +15,7 @@ export function githubApp():App {
   if(app) return app;
   const appId=process.env.GITHUB_APP_ID; const privateKey=process.env.GITHUB_PRIVATE_KEY?.replaceAll("\\n","\n");
   if(!appId||!privateKey) throw new Error("GITHUB_APP_ID and GITHUB_PRIVATE_KEY are required");
-  app=new App({appId,privateKey}); return app;
+  app=new App({appId,privateKey,Octokit}); return app;
 }
 export async function installationClient(id:number):Promise<Octokit> { return await githubApp().getInstallationOctokit(id) as unknown as Octokit; }
 

@@ -1,5 +1,5 @@
 {
-  "name":"@localmesh/contracts","version":"0.1.0","type":"module","main":"./src/index.ts",
+  "name":"@localmesh/contracts","version":"0.1.0","type":"module","main":"./dist/index.js","types":"./dist/index.d.ts",
   "scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","test":"vitest run"},
   "dependencies":{"@localmesh/shared":"workspace:*","js-yaml":"^4.1.0","pg":"^8.16.3","zod":"^4.1.5"},
   "devDependencies":{"@types/js-yaml":"^4.0.9","@types/pg":"^8.15.5"}
