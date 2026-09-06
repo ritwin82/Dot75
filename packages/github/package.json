@@ -1,0 +1,5 @@
+{
+  "name":"@localmesh/github","version":"0.1.0","type":"module","main":"./src/index.ts",
+  "scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","test":"vitest run"},
+  "dependencies":{"@localmesh/shared":"workspace:*","@octokit/app":"^16.1.2","@octokit/rest":"^22.0.0"}
+}

@@ -1,0 +1,9 @@
+{
+  "name": "LocalMesh Sensei",
+  "url": "https://YOUR_PUBLIC_HOST",
+  "hook_attributes": { "url": "https://YOUR_PUBLIC_HOST/webhooks/github", "active": true },
+  "redirect_url": "https://YOUR_PUBLIC_HOST/setup",
+  "public": false,
+  "default_permissions": { "contents": "read", "pull_requests": "read", "checks": "write", "metadata": "read" },
+  "default_events": ["pull_request", "merge_group"]
+}
