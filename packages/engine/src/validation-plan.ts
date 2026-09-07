@@ -139,5 +139,5 @@ export function resultFindings(result: ValidationResult): Finding[] {
 
 export function explanationContext(plan: ValidationPlan, result: ValidationResult): string {
   const groups = [plan.current, ...plan.candidates.filter((candidate) => result.comparedPullRequests.includes(candidate.pr))];
-  return JSON.stringify({ scope: result.scope, orders: result.orders.map(({ order, passed, sqlPassed }) => ({ order, passed, sqlPassed })), migrations: groups.map((group) => ({ pr: group.pr, files: group.files.map(({ path, sql }) => ({ path, sql })) })), baselineSql: plan.baseline.map((file) => file.sql).join("\n").slice(0, 4000), testFixtures: plan.fixtures.join("\n").slice(0, 2000), rollbackResults: result.rollbacks });
+  return JSON.stringify({ scope: result.scope, orders: result.orders.map(({ order, passed, sqlPassed }) => ({ order, passed, sqlPassed })), pullRequestChanges: result.pullRequestChanges, migrations: groups.map((group) => ({ pr: group.pr, files: group.files.map(({ path, sql }) => ({ path, sql })) })), baselineSql: plan.baseline.map((file) => file.sql).join("\n").slice(0, 4000), testFixtures: plan.fixtures.join("\n").slice(0, 2000), rollbackResults: result.rollbacks });
 }

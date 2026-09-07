@@ -2,10 +2,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { Pool } from "pg";
 import { diffObjects, inspectSchema } from "@localmesh/inspector";
-import type { DataStateSnapshot, Finding, MigrationFile, OrderResult, RollbackResult, SchemaSnapshot } from "@localmesh/shared";
+import type { DataStateSnapshot, Finding, MigrationFile, OrderResult, RollbackResult, SchemaSnapshot, SqlExecutionStep } from "@localmesh/shared";
 import { destructiveStatements } from "./performance.js";
 
 const safeIdentifier = (value: string) => `"${value.replaceAll('"','""')}"`;
+const maxRecordedSqlCharacters = 24_000;
+const statementCount = (sql: string) => Math.max(1, sql.split(";").filter((statement) => statement.trim()).length);
+function recordedSql(sql: string): Pick<SqlExecutionStep, "sql" | "sqlTruncated"> {
+  return sql.length > maxRecordedSqlCharacters ? { sql: sql.slice(0, maxRecordedSqlCharacters), sqlTruncated: true } : { sql };
+}
 
 export class PostgresValidationEnvironment {
   private constructor(private readonly container: StartedTestContainer, private readonly adminUrl: string) {}
@@ -66,11 +71,20 @@ export class PostgresValidationEnvironment {
   }
 
   async executeOrder(baseline:MigrationFile[], groups:{pr:number;files:MigrationFile[]}[], extensions:string[], options: { fixtures?: string[]; verify?: (pool: Pool, snapshot: SchemaSnapshot) => Promise<Finding[]>; compareDataState?: boolean; excludeDataColumns?: string[] } = {}):Promise<OrderResult> {
-    const started=Date.now(); const findings:Finding[]=[]; const {pool,before,name}=await this.database(baseline,extensions);
+    const started=Date.now(); const findings:Finding[]=[]; const executionSteps:SqlExecutionStep[]=[]; const {pool,before,name}=await this.database(baseline,extensions);
     try {
       for (const fixture of options.fixtures ?? []) await pool.query(fixture);
       outer: for (const group of groups) for (const file of group.files.filter((f)=>f.direction==="up").sort((a,b)=>a.order-b.order || a.path.localeCompare(b.path))) {
-        try { await pool.query(file.sql); } catch(error) { findings.push({ ...sqlError(error,file.path,file.sql), evidence:{ ...sqlError(error,file.path,file.sql).evidence, pr:group.pr } }); break outer; }
+        const fileStarted=Date.now();
+        try {
+          await pool.query(file.sql);
+          executionSteps.push({pr:group.pr,file:file.path,direction:"up",phase:"migration",status:"passed",durationMs:Date.now()-fileStarted,statementCount:statementCount(file.sql),...recordedSql(file.sql)});
+        } catch(error) {
+          const failure=sqlError(error,file.path,file.sql);
+          findings.push({ ...failure, evidence:{ ...failure.evidence, pr:group.pr } });
+          executionSteps.push({pr:group.pr,file:file.path,direction:"up",phase:"migration",status:"failed",durationMs:Date.now()-fileStarted,statementCount:statementCount(file.sql),...recordedSql(file.sql),errorCode:failure.code,errorMessage:failure.message,...(failure.line?{errorLine:failure.line}:{})});
+          break outer;
+        }
       }
       const sqlPassed = !findings.some((f)=>f.severity==="error");
       const client = await pool.connect();
@@ -79,25 +93,32 @@ export class PostgresValidationEnvironment {
       if (sqlPassed && options.verify) findings.push(...await options.verify(pool, snapshot));
       const dataState = sqlPassed && options.compareDataState !== false ? await captureDataState(pool, options.excludeDataColumns) : undefined;
       return { order:groups.map((g)=>g.pr), passed:!findings.some((f)=>f.severity==="error"), sqlPassed, contractsChecked: sqlPassed && !!options.verify,
-        findings, ...(sqlPassed ? {finalFingerprint:snapshot.fingerprint}:{}), ...(dataState ? {dataState}:{}), snapshot, affectedObjects: diffObjects(before, snapshot), durationMs:Date.now()-started };
+        findings, ...(sqlPassed ? {finalFingerprint:snapshot.fingerprint}:{}), ...(dataState ? {dataState}:{}), snapshot, affectedObjects: diffObjects(before, snapshot), executionSteps, durationMs:Date.now()-started };
     } finally { await this.disposeDatabase(pool,name); }
   }
 
   async verifyRollback(baseline:MigrationFile[], up:MigrationFile, down:MigrationFile|undefined, extensions:string[],fixtures:string[]=[],prior:MigrationFile[]=[]):Promise<RollbackResult> {
-    if (!down) return { migration:up.path,status:"non_reversible",schemaRestored:false,findings:[{code:"NO_DOWN_MIGRATION",severity:"warning",title:"Migration is non-reversible",message:`No down migration is paired with ${up.path}.`,file:up.path}] };
-    const {pool,name}=await this.database(baseline,extensions); const findings=[...destructiveStatements(up)];
+    const started=Date.now();
+    if (!down) return { migration:up.path,upFile:up.path,status:"non_reversible",schemaRestored:false,sqlPassed:false,durationMs:Date.now()-started,executionSteps:[],findings:[{code:"NO_DOWN_MIGRATION",severity:"warning",title:"Migration is non-reversible",message:`No down migration is paired with ${up.path}.`,file:up.path}] };
+    const {pool,name}=await this.database(baseline,extensions); const findings=[...destructiveStatements(up)];const executionSteps:SqlExecutionStep[]=[];
     try {
       for(const fixture of fixtures)await pool.query(fixture);
       for(const file of prior.filter((file)=>file.direction==="up").sort((a,b)=>a.order-b.order || a.path.localeCompare(b.path)))await pool.query(file.sql);
       const beforeClient=await pool.connect();let before:SchemaSnapshot;try{before=await inspectSchema(beforeClient);}finally{beforeClient.release();}
       const dataBefore=(await captureDataState(pool)).fingerprint;
-      try { await pool.query(up.sql); await pool.query(down.sql); } catch(error) { findings.push(sqlError(error,down.path,down.sql)); }
+      let upPassed=true;
+      const upStarted=Date.now();
+      try { await pool.query(up.sql); executionSteps.push({file:up.path,direction:"up",phase:"rollback",status:"passed",durationMs:Date.now()-upStarted,statementCount:statementCount(up.sql),...recordedSql(up.sql)}); }
+      catch(error){upPassed=false;const failure=sqlError(error,up.path,up.sql);findings.push(failure);executionSteps.push({file:up.path,direction:"up",phase:"rollback",status:"failed",durationMs:Date.now()-upStarted,statementCount:statementCount(up.sql),...recordedSql(up.sql),errorCode:failure.code,errorMessage:failure.message,...(failure.line?{errorLine:failure.line}:{})});}
+      let downPassed=false;
+      if(upPassed){const downStarted=Date.now();try{await pool.query(down.sql);downPassed=true;executionSteps.push({file:down.path,direction:"down",phase:"rollback",status:"passed",durationMs:Date.now()-downStarted,statementCount:statementCount(down.sql),...recordedSql(down.sql)});}catch(error){const failure=sqlError(error,down.path,down.sql);findings.push(failure);executionSteps.push({file:down.path,direction:"down",phase:"rollback",status:"failed",durationMs:Date.now()-downStarted,statementCount:statementCount(down.sql),...recordedSql(down.sql),errorCode:failure.code,errorMessage:failure.message,...(failure.line?{errorLine:failure.line}:{})});}}
+      else executionSteps.push({file:down.path,direction:"down",phase:"rollback",status:"skipped",durationMs:0,statementCount:statementCount(down.sql),...recordedSql(down.sql),errorMessage:"Skipped because the up migration failed."});
       const client=await pool.connect(); let after:SchemaSnapshot; try { after=await inspectSchema(client); } finally {client.release();}
       const dataAfter=(await captureDataState(pool)).fingerprint;const dataRestored=dataBefore===dataAfter;
       if (before.fingerprint!==after.fingerprint) findings.push({code:"ROLLBACK_SCHEMA_MISMATCH",severity:"error",title:"Rollback did not restore the schema",message:"The catalog fingerprint after rollback differs from the original.",file:down.path,evidence:{before:before.fingerprint,after:after.fingerprint,objects:diffObjects(before,after).map((o)=>o.id)}});
       if(!dataRestored)findings.push({code:"ROLLBACK_DATA_MISMATCH",severity:"error",title:"Rollback did not restore fixture data",message:"Row hashes after rollback differ from the pre-migration fixture state.",file:down.path,evidence:{before:dataBefore,after:dataAfter}});
-      const unsafe=findings.some((f)=>f.severity==="error" || f.code.startsWith("DROP_") || f.code==="TYPE_CONVERSION");
-      return {migration:up.path,status:unsafe?"unsafe":"safe",schemaRestored:before.fingerprint===after.fingerprint,dataRestored,findings};
+      const changedObjects=diffObjects(before,after).map((object)=>object.id);const unsafe=findings.some((f)=>f.severity==="error" || f.code.startsWith("DROP_") || f.code==="TYPE_CONVERSION");
+      return {migration:up.path,upFile:up.path,downFile:down.path,status:unsafe?"unsafe":"safe",schemaRestored:before.fingerprint===after.fingerprint,dataRestored,sqlPassed:upPassed&&downPassed,durationMs:Date.now()-started,executionSteps,beforeSchemaFingerprint:before.fingerprint,afterSchemaFingerprint:after.fingerprint,beforeDataFingerprint:dataBefore,afterDataFingerprint:dataAfter,changedObjects,findings};
     } finally {await this.disposeDatabase(pool,name);}
   }
 }

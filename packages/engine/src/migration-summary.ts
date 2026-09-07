@@ -27,6 +27,15 @@ export function summarizeMigrationOperations(files: MigrationFile[]): MigrationO
         operations.push(operation(file.path, "rename", "column", `${match[1]}.${match[2]}`, `Renames ${clean(match[1]!)}.${clean(match[2]!)} to ${clean(match[3]!)}.`));
       } else if ((match = statement.match(new RegExp(`^ALTER\\s+TABLE(?:\\s+IF\\s+EXISTS)?\\s+(${identifier})\\s+DROP(?:\\s+COLUMN)?(?:\\s+IF\\s+EXISTS)?\\s+(${identifier})`, "i")))) {
         operations.push(operation(file.path, "drop", "column", `${match[1]}.${match[2]}`, `Drops column ${clean(match[2]!)} from ${clean(match[1]!)}.`));
+      } else if ((match = statement.match(new RegExp(`^ALTER\\s+TABLE(?:\\s+IF\\s+EXISTS)?\\s+(${identifier})\\s+ALTER(?:\\s+COLUMN)?\\s+(${identifier})\\s+SET\\s+DEFAULT\\s+([\\s\\S]+)$`, "i")))) {
+        const value=clean(match[3]!).slice(0,160);
+        operations.push(operation(file.path, "alter", "column", `${match[1]}.${match[2]}`, `Sets the default value of ${clean(match[1]!)}.${clean(match[2]!)} to ${value}.`));
+      } else if ((match = statement.match(new RegExp(`^ALTER\\s+TABLE(?:\\s+IF\\s+EXISTS)?\\s+(${identifier})\\s+ALTER(?:\\s+COLUMN)?\\s+(${identifier})\\s+DROP\\s+DEFAULT`, "i")))) {
+        operations.push(operation(file.path, "alter", "column", `${match[1]}.${match[2]}`, `Removes the default value from ${clean(match[1]!)}.${clean(match[2]!)}.`));
+      } else if ((match = statement.match(new RegExp(`^ALTER\\s+TABLE(?:\\s+IF\\s+EXISTS)?\\s+(${identifier})\\s+ALTER(?:\\s+COLUMN)?\\s+(${identifier})\\s+(SET|DROP)\\s+NOT\\s+NULL`, "i")))) {
+        operations.push(operation(file.path, "alter", "column", `${match[1]}.${match[2]}`, `${match[3]!.toUpperCase()==="SET"?"Requires":"Allows"} null values for ${clean(match[1]!)}.${clean(match[2]!)}.`));
+      } else if ((match = statement.match(new RegExp(`^ALTER\\s+TABLE(?:\\s+IF\\s+EXISTS)?\\s+(${identifier})\\s+ALTER(?:\\s+COLUMN)?\\s+(${identifier})\\s+(?:SET\\s+DATA\\s+)?TYPE\\s+([^\\s,]+)`, "i")))) {
+        operations.push(operation(file.path, "alter", "column", `${match[1]}.${match[2]}`, `Changes ${clean(match[1]!)}.${clean(match[2]!)} to type ${clean(match[3]!)}.`));
       } else if ((match = statement.match(new RegExp(`^ALTER\\s+TABLE(?:\\s+IF\\s+EXISTS)?\\s+(${identifier})\\s+ALTER(?:\\s+COLUMN)?\\s+(${identifier})`, "i")))) {
         operations.push(operation(file.path, "alter", "column", `${match[1]}.${match[2]}`, `Changes the definition of ${clean(match[1]!)}.${clean(match[2]!)}.`));
       } else if ((match = statement.match(new RegExp(`^ALTER\\s+TABLE(?:\\s+IF\\s+EXISTS)?\\s+(${identifier})`, "i")))) {

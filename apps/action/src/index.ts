@@ -48,7 +48,7 @@ async function main(): Promise<void> {
       ]), JSON.stringify({
         pullRequests: result.provenance?.pullRequests,
         changes: result.pullRequestChanges,
-        executionOrders: result.orders.map(({ order, passed, sqlPassed }) => ({ order, passed, sqlPassed })),
+        executionOrders: result.orders.map(({ order, passed, sqlPassed, executionSteps, findings }) => ({ order, passed, sqlPassed, executionSteps, findingCodes: findings.map((finding) => finding.code) })),
         compatibility: result.compatibility,
         rollbackResults: result.rollbacks,
         dataDifferences: result.dataDifferences

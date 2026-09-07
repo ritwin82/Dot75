@@ -17,9 +17,14 @@ const object = z.object({ id: boundedText, kind: z.enum(["table", "partition", "
   schema: boundedText.optional(), relation: boundedText.optional(), name: boundedText, definition: boundedText });
 const operation = z.object({ file: filePath, action: z.enum(["create", "alter", "add", "drop", "rename", "insert", "update", "delete", "execute"]),
   objectKind: z.enum(["table", "column", "index", "constraint", "type", "view", "function", "data", "statement"]), objectName: boundedText, description: boundedText });
+const executionStep = z.object({ pr: prNumber.optional(), file: filePath, direction: z.enum(["up", "down"]), phase: z.enum(["migration", "rollback"]),
+  status: z.enum(["passed", "failed", "skipped"]), durationMs: z.number().nonnegative(), statementCount: z.number().int().positive(), sql: z.string().max(24_000),
+  sqlTruncated: z.boolean().optional(), errorCode: boundedText.optional(), errorMessage: boundedText.optional(), errorLine: z.number().int().positive().optional() });
 const explanation = z.object({ cause: boundedText, conflictingObjects: z.array(boundedText).max(100), forwardFix: boundedText, rollbackFix: boundedText,
   confidence: z.enum(["low", "medium", "high"]), assumptions: z.array(boundedText).max(100), source: z.enum(["ollama", "deterministic"]), model: boundedText.optional(),
-  durationMs: z.number().nonnegative().optional(), fallbackReason: boundedText.optional(), cached: z.boolean().optional() });
+  durationMs: z.number().nonnegative().optional(), fallbackReason: boundedText.optional(), cached: z.boolean().optional(),
+  prSummaries: z.array(z.object({ pr: prNumber, summary: boundedText })).max(30).optional(), mergeOutcome: boundedText.optional(), rootCause: boundedText.optional(),
+  repairSteps: z.array(z.object({ title: boundedText, instruction: boundedText, reason: boundedText, verification: boundedText })).max(12).optional(), rollbackAssessment: boundedText.optional() });
 const resultSchema = z.object({
   jobId: boundedText, repository: boundedText, currentPr: prNumber, baseSha: sha, headSha: sha,
   status: z.enum(["passed", "failed", "cancelled"]), startedAt: boundedText, completedAt: boundedText.optional(),
@@ -27,9 +32,11 @@ const resultSchema = z.object({
   comparedPullRequests: z.array(prNumber).max(2000),
   orders: z.array(z.object({ order: z.array(prNumber).min(1).max(2000), passed: z.boolean(), findings,
     durationMs: z.number().nonnegative(), sqlPassed: z.boolean().optional(), contractsChecked: z.boolean().optional(), finalFingerprint: boundedText.optional(), dataState: dataState.optional(),
-    affectedObjects: z.array(object).max(20_000).optional() })).max(10_000),
+    affectedObjects: z.array(object).max(20_000).optional(), executionSteps: z.array(executionStep).max(5000).optional() })).max(10_000),
   contracts: findings, performance: findings,
-  rollbacks: z.array(z.object({ migration: boundedText, status: z.enum(["safe", "unsafe", "non_reversible"]), schemaRestored: z.boolean(), dataRestored: z.boolean().optional(), findings })).max(5000),
+  rollbacks: z.array(z.object({ migration: boundedText, status: z.enum(["safe", "unsafe", "non_reversible"]), schemaRestored: z.boolean(), dataRestored: z.boolean().optional(), findings,
+    durationMs: z.number().nonnegative().optional(), upFile: filePath.optional(), downFile: filePath.optional(), sqlPassed: z.boolean().optional(), executionSteps: z.array(executionStep).max(5000).optional(),
+    beforeSchemaFingerprint: boundedText.optional(), afterSchemaFingerprint: boundedText.optional(), beforeDataFingerprint: boundedText.optional(), afterDataFingerprint: boundedText.optional(), changedObjects: z.array(boundedText).max(20_000).optional() })).max(5000),
   compatibility: z.array(z.object({ pullRequests: z.tuple([prNumber, prNumber]), status: z.enum(["compatible", "conflict", "order_sensitive", "independent", "standalone_invalid", "untested"]),
     testedOrders: z.array(z.array(prNumber).max(2000)).max(2000), passingOrder: z.array(prNumber).max(2000).optional(), findingCodes: z.array(boundedText).max(5000), reason: boundedText,
     sourceJobId: boundedText.optional(), observedAt: boundedText.optional() })).max(5000).optional(),

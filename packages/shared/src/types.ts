@@ -102,6 +102,22 @@ export interface OrderResult {
   snapshot?: SchemaSnapshot;
   affectedObjects?: SchemaObject[];
   dataState?: DataStateSnapshot;
+  executionSteps?: SqlExecutionStep[];
+}
+
+export interface SqlExecutionStep {
+  pr?: number;
+  file: string;
+  direction: "up" | "down";
+  phase: "migration" | "rollback";
+  status: "passed" | "failed" | "skipped";
+  durationMs: number;
+  statementCount: number;
+  sql: string;
+  sqlTruncated?: boolean;
+  errorCode?: string;
+  errorMessage?: string;
+  errorLine?: number;
 }
 
 export interface RollbackResult {
@@ -110,6 +126,16 @@ export interface RollbackResult {
   schemaRestored: boolean;
   dataRestored?: boolean;
   findings: Finding[];
+  durationMs?: number;
+  upFile?: string;
+  downFile?: string;
+  sqlPassed?: boolean;
+  executionSteps?: SqlExecutionStep[];
+  beforeSchemaFingerprint?: string;
+  afterSchemaFingerprint?: string;
+  beforeDataFingerprint?: string;
+  afterDataFingerprint?: string;
+  changedObjects?: string[];
 }
 
 export interface MigrationOperationSummary {
@@ -172,6 +198,11 @@ export interface AiExplanation {
   durationMs?: number;
   fallbackReason?: string;
   cached?: boolean;
+  prSummaries?: Array<{ pr: number; summary: string }>;
+  mergeOutcome?: string;
+  rootCause?: string;
+  repairSteps?: Array<{ title: string; instruction: string; reason: string; verification: string }>;
+  rollbackAssessment?: string;
 }
 
 export interface ValidationJob {

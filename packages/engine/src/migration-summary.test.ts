@@ -16,4 +16,8 @@ describe("migration operation summaries", () => {
     ]);
     expect(JSON.stringify(operations)).not.toContain("'active'");
   });
+  it("names the exact default each PR would apply", () => {
+    const operations = summarizeMigrationOperations([{ path:"db/migrations/003_status.up.sql",direction:"up",order:3,sql:"ALTER TABLE orders ALTER COLUMN status SET DEFAULT 'cancelled';" }]);
+    expect(operations[0]?.description).toBe("Sets the default value of orders.status to 'cancelled'.");
+  });
 });

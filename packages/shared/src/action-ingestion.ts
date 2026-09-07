@@ -14,6 +14,11 @@ const finding = z.object({
   file: z.string().min(1).max(4096).optional(),
   line: z.number().int().positive().optional()
 });
+const executionStep = z.object({
+  pr: prNumber.optional(), file: z.string().min(1).max(4096), direction: z.enum(["up", "down"]), phase: z.enum(["migration", "rollback"]),
+  status: z.enum(["passed", "failed", "skipped"]), durationMs: z.number().nonnegative(), statementCount: z.number().int().positive(), sql: z.string().max(24_000),
+  sqlTruncated: z.boolean().optional(), errorCode: boundedText.optional(), errorMessage: boundedText.optional(), errorLine: z.number().int().positive().optional()
+});
 
 export const ingestedValidationResultSchema = z.object({
   jobId: boundedText,
@@ -41,7 +46,8 @@ export const ingestedValidationResultSchema = z.object({
     finalFingerprint: boundedText.optional(),
     durationMs: z.number().nonnegative(),
     sqlPassed: z.boolean().optional(),
-    contractsChecked: z.boolean().optional()
+    contractsChecked: z.boolean().optional(),
+    executionSteps: z.array(executionStep).max(5_000).optional()
   }).passthrough()).max(10_000),
   contracts: z.array(finding).max(5_000),
   rollbacks: z.array(z.object({
@@ -49,7 +55,10 @@ export const ingestedValidationResultSchema = z.object({
     status: z.enum(["safe", "unsafe", "non_reversible"]),
     schemaRestored: z.boolean(),
     dataRestored: z.boolean().optional(),
-    findings: z.array(finding).max(5_000)
+    findings: z.array(finding).max(5_000),
+    durationMs: z.number().nonnegative().optional(), upFile: z.string().min(1).max(4096).optional(), downFile: z.string().min(1).max(4096).optional(), sqlPassed: z.boolean().optional(),
+    executionSteps: z.array(executionStep).max(5_000).optional(), beforeSchemaFingerprint: boundedText.optional(), afterSchemaFingerprint: boundedText.optional(),
+    beforeDataFingerprint: boundedText.optional(), afterDataFingerprint: boundedText.optional(), changedObjects: z.array(boundedText).max(20_000).optional()
   })).max(5_000),
   performance: z.array(finding).max(5_000),
   pullRequestChanges: z.array(z.object({

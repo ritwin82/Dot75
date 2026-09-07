@@ -19,6 +19,14 @@ describe.skipIf(process.env.RUN_DOCKER_TESTS !== "1")("shared PR validation plan
       expect(result.orders.every((order) => order.sqlPassed && order.contractsChecked)).toBe(true);
       expect(result.orders.filter((order) => order.order.length === 2).every((order) => !order.passed)).toBe(true);
     }
+    expect(result.scope?.rollbackChecked).toBe(true);
+    expect(result.rollbacks).toHaveLength(1);
+    expect(result.rollbacks[0]?.sqlPassed).toBe(true);
+    expect(result.rollbacks[0]?.executionSteps?.map((step) => [step.direction, step.status])).toEqual([["up", "passed"], ["down", "passed"]]);
+    expect(result.rollbacks[0]?.schemaRestored).toBe(true);
+    expect(result.rollbacks[0]?.dataRestored).toBe(true);
+    expect(result.rollbacks[0]?.beforeSchemaFingerprint).toBe(result.rollbacks[0]?.afterSchemaFingerprint);
+    expect(result.rollbacks[0]?.beforeDataFingerprint).toBe(result.rollbacks[0]?.afterDataFingerprint);
     if (scenario.expectedPassed) expect(result.scope?.skippedPrs).toEqual([213]);
     expect(result.orders.every((order) => !order.snapshot)).toBe(true);
     expect(result.affectedObjects.every((object) => !object.schema?.startsWith("pg_"))).toBe(true);

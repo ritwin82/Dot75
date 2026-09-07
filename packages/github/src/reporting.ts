@@ -168,6 +168,12 @@ export function checkSummary(result: ValidationResult): string {
     ""
   ];
   if (result.affectedObjects?.length) lines.push(`Affected catalog objects: ${result.affectedObjects.map((object) => code(object.id)).join(", ")}.`, "");
+  const sqlSteps = result.orders.flatMap((order) => order.executionSteps?.map((step) => ({ order: order.order, step })) ?? []);
+  if (sqlSteps.length) {
+    lines.push("### SQL file execution", "", "| Merge order | PR | Migration file | Result | Statements | Duration |", "| --- | --- | --- | --- | --- | --- |");
+    for (const { order, step } of sqlSteps) lines.push(`| ${orderLabel(order)} | ${step.pr === undefined ? "—" : `#${step.pr}`} | ${code(step.file)} | ${text(step.status)}${step.errorCode ? ` (${code(step.errorCode)})` : ""} | ${step.statementCount} | ${step.durationMs} ms |`);
+    lines.push("", "The dashboard and JSON export contain the recorded SQL text and exact database error for each file.", "");
+  }
   if (result.compatibility?.length) {
     lines.push("### PR compatibility", "", "| Pull requests | Classification | Verified passing order |", "| --- | --- | --- |");
     for (const relationship of result.compatibility) lines.push(`| ${relationship.pullRequests.map((pr) => `#${pr}`).join(" ↔ ")} | ${text(relationship.status.replaceAll("_", " "))} | ${relationship.passingOrder?.map((pr) => `#${pr}`).join(" → ") ?? "—"} |`);
@@ -181,7 +187,7 @@ export function checkSummary(result: ValidationResult): string {
   }
   if (result.rollbacks.length) {
     lines.push("### Rollback results", "");
-    for (const rollback of result.rollbacks) lines.push(`- ${code(rollback.migration)}: **${rollback.status.replaceAll("_", " ")}**; schema restored: ${rollback.schemaRestored ? "yes" : "no"}; fixture data restored: ${rollback.dataRestored === undefined ? "not checked" : rollback.dataRestored ? "yes" : "no"}.`);
+    for (const rollback of result.rollbacks) lines.push(`- ${code(rollback.migration)}: **${rollback.status.replaceAll("_", " ")}**; schema restored: ${rollback.schemaRestored ? "yes" : "no"}; fixture data restored: ${rollback.dataRestored === undefined ? "not checked" : rollback.dataRestored ? "yes" : "no"}; up/down SQL: ${rollback.sqlPassed === undefined ? "not recorded" : rollback.sqlPassed ? "passed" : "failed"}${rollback.durationMs === undefined ? "" : `; ${rollback.durationMs} ms`}.`);
     lines.push("");
   }
   if (entries.length) lines.push("### Findings and next steps", "", ...entries.slice(0, 40).flatMap((entry) => findingLines(result, entry)));

@@ -3,7 +3,10 @@ import { explainWithOllama } from "./ollama.js";
 import type { Finding } from "@localmesh/shared";
 
 const findings: Finding[] = [{ code: "42701", severity: "error", title: "Duplicate column", message: "column priority already exists" }];
-const valid = { cause: "Two PRs add priority.", conflictingObjects: ["orders.priority"], forwardFix: "Use a single agreed definition.", rollbackFix: "Review the paired down migrations.", confidence: "medium", assumptions: [] };
+const valid = { cause: "Two PRs add priority.", conflictingObjects: ["orders.priority"], forwardFix: "Use a single agreed definition.", rollbackFix: "Review the paired down migrations.", confidence: "medium", assumptions: [],
+  prSummaries: [{ pr: 1, summary: "Adds the priority column." }, { pr: 2, summary: "Also adds the priority column." }], mergeOutcome: "The second migration fails in both orders.",
+  rootCause: "Both PRs create the same column.", repairSteps: [{ title: "Choose ownership", instruction: "Keep one definition.", reason: "Only one PR should create the column.", verification: "Run both orders." },
+    { title: "Align rollback", instruction: "Update the down migration.", reason: "Rollback must match ownership.", verification: "Verify schema restoration." }], rollbackAssessment: "Review recorded rollback evidence." };
 afterEach(() => vi.unstubAllGlobals());
 describe("local Ollama explanations", () => {
   it("does not ask the model to invent an issue when there are no findings", async () => {
