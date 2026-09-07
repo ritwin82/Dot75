@@ -1,7 +1,20 @@
-import { describe, expect, it } from "vitest";
-import { createInstallationState, createOAuthState, createSession, openCredential, readInstallationState, readSession, sealCredential, sessionCookie, verifyOAuthState } from "./auth.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { authConfiguration, createInstallationState, createOAuthState, createSession, openCredential, readInstallationState, readSession, sealCredential, sessionCookie, verifyOAuthState } from "./auth.js";
 
 describe("hosted account authentication", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("keeps hosted authentication disabled for a local CORS origin", () => {
+    vi.stubEnv("GITHUB_CLIENT_ID", "");
+    vi.stubEnv("GITHUB_CLIENT_SECRET", "");
+    vi.stubEnv("GITHUB_APP_SLUG", "");
+    vi.stubEnv("LOCALMESH_SESSION_SECRET", "");
+    vi.stubEnv("PUBLIC_API_URL", "");
+    vi.stubEnv("WEB_ORIGIN", "http://localhost:3000");
+
+    expect(authConfiguration()).toBeUndefined();
+  });
+
   it("binds OAuth state to the initiating browser", () => {
     const state = createOAuthState("secret", 1_000);
     expect(verifyOAuthState(state, state, "secret", 2_000)).toBe(true);

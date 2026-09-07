@@ -40,7 +40,8 @@ export function authConfiguration(): AuthConfiguration | undefined {
     publicApiUrl: configured("PUBLIC_API_URL"),
     webOrigin: configured("WEB_ORIGIN")
   };
-  if (!Object.values(values).some(Boolean)) return undefined;
+  const hostedValues = [values.clientId, values.clientSecret, values.appSlug, values.sessionSecret, values.publicApiUrl];
+  if (!hostedValues.some(Boolean)) return undefined;
   const missing = Object.entries(values).filter(([, value]) => !value).map(([key]) => key);
   if (missing.length) throw new Error(`Hosted GitHub authentication is incomplete: ${missing.join(", ")}.`);
   return {
