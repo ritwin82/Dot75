@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Octokit } from "@octokit/rest";
 import { describe, expect, it, vi } from "vitest";
-import { createDiskDiscoveryCache, discoverMigrationPullRequests, discoverRevisionMigrations, type DiscoveryCache } from "./discovery.js";
+import { createDiskDiscoveryCache, discoverMigrationPullRequests, discoverRevisionMigrations, migrationDescriptor,migrationFilesFromSource, type DiscoveryCache } from "./discovery.js";
 import { getTextFile, listMigrations, listSqlFiles } from "./index.js";
 
 const BASE = "a".repeat(40);
@@ -35,6 +35,19 @@ function client(trees: Record<string, ReturnType<typeof entry>[]>, sources: stri
 }
 
 describe("immutable migration discovery", () => {
+  it("normalizes raw SQL, Prisma and Drizzle migration names", () => {
+    expect(migrationDescriptor("db/001_add.up.sql","raw-sql")).toEqual({direction:"up",order:1});
+    expect(migrationDescriptor("prisma/migrations/20260907120000_add/migration.sql","prisma")).toEqual({direction:"up",order:20260907120000});
+    expect(migrationDescriptor("drizzle/0003_add_users.sql","drizzle")).toEqual({direction:"up",order:3});
+    expect(migrationDescriptor("drizzle/meta/journal.json","drizzle")).toBeUndefined();
+    expect(migrationDescriptor("sql/V2_1__add_users.sql","flyway")).toEqual({direction:"up",order:2001});
+    expect(migrationDescriptor("sql/U2_1__add_users.sql","flyway")).toEqual({direction:"down",order:2001});
+    expect(migrationDescriptor("sql/R__refresh_views.sql","flyway")).toEqual({direction:"up",order:Number.MAX_SAFE_INTEGER});
+    expect(migrationFilesFromSource("db/004-users.sql","--liquibase formatted sql\n--changeset a:1\nCREATE TABLE users(id int);\n--rollback DROP TABLE users;","liquibase")).toEqual([
+      {path:"db/004-users.sql",sql:"--liquibase formatted sql\n--changeset a:1\nCREATE TABLE users(id int);\n--rollback DROP TABLE users;",direction:"up",order:4},
+      {path:"db/004-users.sql#rollback",sql:"DROP TABLE users;\n",direction:"down",order:4}
+    ]);
+  });
   it("reads immutable blobs, sorts numeric migration order, and respects directory boundaries", async () => {
     const a = "CREATE TABLE a(id int);";
     const b = "DROP TABLE a;";

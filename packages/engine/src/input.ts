@@ -12,7 +12,7 @@ const pathSchema = z.string().min(1).max(1024).refine((path) =>
 const shaSchema = z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i, "Expected an immutable Git commit SHA");
 const migrationSchema = z.object({
   path: pathSchema, sql: z.string().max(2_000_000), direction: z.enum(["up", "down"]), order: z.number().int().nonnegative()
-}).strict().refine((file) => file.path.endsWith(`.${file.direction}.sql`), "Migration direction must match its .up.sql or .down.sql suffix");
+}).strict();
 const migrationFilesSchema = z.array(migrationSchema).max(10_000).refine((files) => new Set(files.map((file) => file.path)).size === files.length, "Migration paths must be unique within each revision");
 const groupSchema = z.object({ pr: z.number().int().nonnegative(), files: migrationFilesSchema }).strict();
 const findingSchema = z.object({
@@ -25,7 +25,8 @@ const validationInputSchema = z.object({
   job: z.object({
     id: z.string().min(1).max(128), installationId: z.number().int().nonnegative(), owner: z.string().regex(/^[\w.-]+$/),
     repo: z.string().regex(/^[\w.-]+$/), prNumber: z.number().int().nonnegative(), headSha: shaSchema, baseSha: shaSchema,
-    checkRunId: z.number().int().positive().optional()
+    checkRunId: z.number().int().positive().optional(), engineVersion: z.string().max(100).optional(),
+    trigger: z.enum(["pull_request", "push", "merge_group"]).optional()
   }).strict(),
   config: z.unknown().transform((value, context): LocalMeshConfig => {
     try { return parseConfig(JSON.stringify(value)); }
@@ -47,6 +48,14 @@ const validationInputSchema = z.object({
   }).strict().optional(),
   discoveryFindings: z.array(findingSchema).max(10_000).optional()
 }).strict().superRefine((input, context) => {
+  if (input.config.migrations.adapter === "raw-sql") {
+    const migrations = [...input.baseline, ...input.current.files, ...input.candidates.flatMap((candidate) => candidate.files)];
+    for (const [index, file] of migrations.entries()) {
+      if (!file.path.endsWith(`.${file.direction}.sql`)) context.addIssue({
+        code: "custom", path: ["migrations", index, "direction"], message: "Raw SQL migration direction must match its .up.sql or .down.sql suffix"
+      });
+    }
+  }
   if (input.current.pr !== input.job.prNumber) context.addIssue({ code: "custom", path: ["current", "pr"], message: "Current PR must match job.prNumber" });
   const numbers = input.candidates.map((candidate) => candidate.pr);
   if (numbers.includes(input.current.pr) || new Set(numbers).size !== numbers.length) context.addIssue({ code: "custom", path: ["candidates"], message: "Candidates must be unique and exclude the current PR" });

@@ -1,9 +1,9 @@
 import {createHmac,timingSafeEqual} from "node:crypto";
 import {App} from "@octokit/app";
 import {Octokit} from "@octokit/rest";
-import type {GitHubAccountInstallation,GitHubRepositoryAccess,MigrationFile,ValidationResult} from "@localmesh/shared";
+import type {GitHubAccountInstallation,GitHubRepositoryAccess,MigrationAdapterName,MigrationFile,ValidationResult} from "@localmesh/shared";
 import {checkAnnotations,checkConclusion,checkSummary,checkTitle} from "./reporting.js";
-import {migrationDirectoryPrefix} from "./discovery.js";
+import {migrationAdapters,migrationDescriptor,migrationDirectoryPrefix,migrationFilesFromSource} from "./discovery.js";
 export * from "./reporting.js";
 export * from "./discovery.js";
 
@@ -92,13 +92,13 @@ export async function getTextFile(octokit:Octokit,owner:string,repo:string,path:
   try {const {data}=await octokit.repos.getContent({owner,repo,path,ref}); if(Array.isArray(data)||data.type!=="file"||!("content" in data)) return undefined; if(data.encoding!=="base64")throw new Error(`GitHub did not return the complete contents of ${path} at ${ref}.`); const decoded=Buffer.from(data.content,"base64");if(decoded.length!==data.size)throw new Error(`GitHub returned incomplete contents for ${path} at ${ref}.`);return decoded.toString("utf8");} catch(error){if((error as {status?:number}).status===404)return undefined;throw error;}
 }
 
-export async function listMigrations(octokit:Octokit,owner:string,repo:string,ref:string,directory:string):Promise<MigrationFile[]> {
+export async function listMigrations(octokit:Octokit,owner:string,repo:string,ref:string,directory:string,adapter:MigrationAdapterName="raw-sql"):Promise<MigrationFile[]> {
   const {data}=await octokit.git.getTree({owner,repo,tree_sha:ref,recursive:"true"});
   if(data.truncated)throw new Error(`GitHub truncated the migration tree at ${ref}; validation cannot use an incomplete baseline.`);
   const prefix=migrationDirectoryPrefix(directory);
-  const paths=data.tree.filter((e)=>e.type==="blob"&&e.path?.startsWith(prefix)&&e.path.endsWith(".sql")).map((e)=>e.path!);
+  const paths=data.tree.filter((e)=>e.type==="blob"&&e.path?.startsWith(prefix)&&migrationAdapters[adapter].extensions.some((extension)=>e.path!.endsWith(extension))).map((e)=>e.path!);
   const files:MigrationFile[]=[];
-  for(const path of paths){const direction=path.endsWith(".down.sql")?"down":path.endsWith(".up.sql")?"up":undefined;if(!direction)throw new Error(`Unsupported baseline migration ${path}; expected .up.sql or .down.sql.`);const sql=await getTextFile(octokit,owner,repo,path,ref);if(sql===undefined)throw new Error(`Could not read baseline migration ${path} at ${ref}.`);files.push({path,sql,direction,order:migrationOrder(path)});}
+  for(const path of paths){if(!migrationDescriptor(path,adapter))continue;const sql=await getTextFile(octokit,owner,repo,path,ref);if(sql===undefined)throw new Error(`Could not read baseline migration ${path} at ${ref}.`);files.push(...migrationFilesFromSource(path,sql,adapter));}
   return files.sort((a,b)=>a.order-b.order||a.path.localeCompare(b.path));
 }
 
@@ -111,12 +111,10 @@ export async function listSqlFiles(octokit:Octokit,owner:string,repo:string,ref:
   return result.sort((a,b)=>a.path.localeCompare(b.path));
 }
 
-export async function pullRequestMigrations(octokit:Octokit,owner:string,repo:string,pr:number,headSha:string,directory:string):Promise<MigrationFile[]> {
+export async function pullRequestMigrations(octokit:Octokit,owner:string,repo:string,pr:number,headSha:string,directory:string,adapter:MigrationAdapterName="raw-sql"):Promise<MigrationFile[]> {
   const changed=await octokit.paginate(octokit.pulls.listFiles,{owner,repo,pull_number:pr,per_page:100}); const files:MigrationFile[]=[];
-  for(const item of changed.filter((f)=>f.status!=="removed"&&f.filename.startsWith(`${directory.replace(/\/$/,"")}/`)&&f.filename.endsWith(".sql"))){const direction=item.filename.endsWith(".down.sql")?"down":item.filename.endsWith(".up.sql")?"up":undefined;if(!direction)continue;const sql=await getTextFile(octokit,owner,repo,item.filename,headSha);if(sql!==undefined)files.push({path:item.filename,sql,direction,order:migrationOrder(item.filename)});}
+  for(const item of changed.filter((f)=>f.status!=="removed"&&f.filename.startsWith(`${directory.replace(/\/$/,"")}/`)&&migrationAdapters[adapter].extensions.some((extension)=>f.filename.endsWith(extension)))){if(!migrationDescriptor(item.filename,adapter))continue;const sql=await getTextFile(octokit,owner,repo,item.filename,headSha);if(sql!==undefined)files.push(...migrationFilesFromSource(item.filename,sql,adapter));}
   return files.sort((a,b)=>a.order-b.order||a.path.localeCompare(b.path));
 }
-
-function migrationOrder(path:string):number {const match=path.split("/").at(-1)?.match(/^(\d+)/);return match?Number(match[1]):Number.MAX_SAFE_INTEGER;}
 
 export async function openPullRequests(octokit:Octokit,owner:string,repo:string,exclude:number){const prs=await octokit.paginate(octokit.pulls.list,{owner,repo,state:"open",per_page:100});return prs.filter((pr)=>pr.number!==exclude&&!pr.draft).map((pr)=>({number:pr.number,title:pr.title,headSha:pr.head.sha,baseSha:pr.base.sha,author:pr.user?.login??"unknown"}));}

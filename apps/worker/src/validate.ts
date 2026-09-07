@@ -22,18 +22,19 @@ export async function validateJob(job: ValidationJob): Promise<ValidationResult>
     const read = (path: string) => getTextFile(octokit, job.owner, job.repo, path, job.baseSha);
     const configText = await read("localmesh.yml");
     const config = configText !== undefined ? parseConfig(configText) : defaultConfig;
-    if (config.migrations.up_pattern !== "*.up.sql" || config.migrations.down_pattern !== "*.down.sql") throw new Error("This LocalMesh engine requires migration patterns *.up.sql and *.down.sql; custom patterns cannot be safely interpreted.");
+    if (["rails", "django", "alembic"].includes(config.migrations.adapter)) throw new Error(`The ${config.migrations.adapter} adapter requires an isolated project runner and is not enabled.`);
+    if (config.migrations.adapter === "raw-sql" && (config.migrations.up_pattern !== "*.up.sql" || config.migrations.down_pattern !== "*.down.sql")) throw new Error("The raw SQL adapter requires migration patterns *.up.sql and *.down.sql; custom patterns cannot be safely interpreted.");
     const pr = job.prNumber === 0 ? {
       title: "Merge queue", user: { login: "github-merge-queue" }, base: { ref: "" },
       head: { repo: { owner: { login: job.owner }, name: job.repo } }
     } : (await octokit.pulls.get({ owner: job.owner, repo: job.repo, pull_number: job.prNumber })).data;
     if (!pr.head.repo) throw new Error(`The source repository for PR #${job.prNumber} is unavailable.`);
     const cache = createDiskDiscoveryCache(process.env.LOCALMESH_DISCOVERY_CACHE ?? ".localmesh-cache/github");
-    const revisionOptions = { owner: job.owner, repo: job.repo, baseSha: job.baseSha, directory: config.migrations.directory, cache };
+    const revisionOptions = { owner: job.owner, repo: job.repo, baseSha: job.baseSha, directory: config.migrations.directory, adapter: config.migrations.adapter, cache };
     const current = await discoverRevisionMigrations(octokit, { ...revisionOptions, headSha: job.headSha, headOwner: pr.head.repo.owner.login, headRepo: pr.head.repo.name });
     const hasChanges = current.migrations.length > 0 || current.issues.length > 0;
     const [baseline, peers, fixtures, mappingText, metadataText] = hasChanges ? await Promise.all([
-      listMigrations(octokit, job.owner, job.repo, job.baseSha, config.migrations.directory),
+      listMigrations(octokit, job.owner, job.repo, job.baseSha, config.migrations.directory, config.migrations.adapter),
       job.prNumber !== 0 && config.checks.compare_open_pull_requests ? discoverMigrationPullRequests(octokit, { ...revisionOptions, baseRef: pr.base.ref, excludePr: job.prNumber, includeDrafts: true }) : Promise.resolve({ pullRequests: [], issues: [] }),
       listSqlFiles(octokit, job.owner, job.repo, job.baseSha, config.contracts.fixtures_directory),
       read(config.contracts.mappings_file), read(config.performance.metadata_file)

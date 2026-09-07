@@ -37,8 +37,9 @@ export async function prepareRun(octokit: Octokit, event: ActionEnvelope["event"
   const envelope: ActionEnvelope = { version: 1, repository: `${owner}/${repo}`, runId: run.id, runAttempt: run.attempt, event, baseRef, baseSha, ...(event === "merge_group" ? { queueBaseSha: target.baseSha! } : {}), targets: [] };
   const configText = await getTextFile(octokit, owner, repo, "localmesh.yml", baseSha);
   const config = configText !== undefined ? parseConfig(configText) : defaultConfig;
-  if (config.migrations.up_pattern !== "*.up.sql" || config.migrations.down_pattern !== "*.down.sql") throw new Error("This CLI supports *.up.sql and *.down.sql only; custom migration patterns cannot be safely analyzed.");
-  const options = { owner, repo, baseSha, directory: config.migrations.directory, ...(cache ? { cache } : {}) };
+  if (["rails", "django", "alembic"].includes(config.migrations.adapter)) throw new Error(`The ${config.migrations.adapter} adapter requires an isolated project runner and is not enabled.`);
+  if (config.migrations.adapter === "raw-sql" && (config.migrations.up_pattern !== "*.up.sql" || config.migrations.down_pattern !== "*.down.sql")) throw new Error("The raw SQL adapter requires *.up.sql and *.down.sql patterns; custom patterns cannot be safely interpreted.");
+  const options = { owner, repo, baseSha, directory: config.migrations.directory, adapter: config.migrations.adapter, ...(cache ? { cache } : {}) };
   let current: PullRequestRef | undefined;
   let currentIssues: DiscoveryIssue[] = [];
   if (event === "pull_request") {
@@ -58,7 +59,7 @@ export async function prepareRun(octokit: Octokit, event: ActionEnvelope["event"
   const targets = current ? [current] : discovery.pullRequests;
   const anyChanges = targets.some((pr) => pr.migrations.length) || currentIssues.length || discovery.issues.length;
   const [baseline, fixtures, mappingsText, metadataText] = anyChanges ? await Promise.all([
-    listMigrations(octokit, owner, repo, baseSha, config.migrations.directory),
+    listMigrations(octokit, owner, repo, baseSha, config.migrations.directory, config.migrations.adapter),
     listSqlFiles(octokit, owner, repo, baseSha, config.contracts.fixtures_directory),
     getTextFile(octokit, owner, repo, config.contracts.mappings_file, baseSha),
     getTextFile(octokit, owner, repo, config.performance.metadata_file, baseSha)
