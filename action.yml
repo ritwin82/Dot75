@@ -1,4 +1,4 @@
-name: LocalMesh Sensei
+name: Dot75 Migration Compatibility
 description: Discover immutable migration PR snapshots and invoke the LocalMesh CLI.
 inputs:
   token:

@@ -36,7 +36,7 @@ function client(comments: unknown[] = []) {
 describe("GitHub validation explanations", () => {
   it("records exact commits, conflicting author, SQL location, objects, impact, action, and scope", () => {
     const summary = checkSummary(result());
-    for (const detail of ["base-sha", "current-head-sha", "other-head-sha", "#2 by `@bob`", "#2 → #1", "migrations/002_status.up.sql:8", "column:public.orders.status", "42701", "remove or rename", "sha256:digest", "Contracts: 1", "Fixture files: 2", "1 candidate(s) skipped", "three or more PRs", "pnpm localmesh validate --input input-1.json --output result-1.json"]) {
+    for (const detail of ["base-sha", "current-head-sha", "other-head-sha", "#2 by `@bob`", "#2 → #1", "migrations/002_status.up.sql:8", "column:public.orders.status", "42701", "remove or rename", "sha256:digest", "Contracts: 1", "Fixture files: 2", "1 candidate(s) skipped", "three or more PRs", "localmesh repro --input input-1.json --output result-1.json"]) {
       expect(summary).toContain(detail);
     }
   });

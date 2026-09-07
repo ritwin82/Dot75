@@ -4,13 +4,13 @@ import type { ValidationJob, ValidationResult } from "@localmesh/shared";
 const state = vi.hoisted(() => ({
   getTextFile: vi.fn(), installationClient: vi.fn(), listMigrations: vi.fn(), listSqlFiles: vi.fn(),
   discoverRevisionMigrations: vi.fn(), discoverMigrationPullRequests: vi.fn(), createDiskDiscoveryCache: vi.fn(),
-  markCheckInfrastructureFailure: vi.fn(), markCheckRunning: vi.fn(), updateCheck: vi.fn(),
-  setJobStatus: vi.fn(), isJobCancelled: vi.fn(), runValidationInput: vi.fn(), explainWithOllama: vi.fn(),
+  markCheckInfrastructureFailure: vi.fn(), markCheckRunning: vi.fn(), updateCheck: vi.fn(),upsertStickyComment:vi.fn(),authenticatedBotLogin:vi.fn(),
+  setJobStatus: vi.fn(), appendJobEvent:vi.fn(),saveReplayInput:vi.fn(), isJobCancelled: vi.fn(), runValidationInput: vi.fn(), explainWithOllama: vi.fn(),
   pullsGet: vi.fn(), calls: [] as string[]
 }));
 
 vi.mock("@localmesh/github", () => state);
-vi.mock("@localmesh/db", () => ({ setJobStatus: state.setJobStatus, isJobCancelled: state.isJobCancelled }));
+vi.mock("@localmesh/db", () => ({ setJobStatus: state.setJobStatus, appendJobEvent:state.appendJobEvent,saveReplayInput:state.saveReplayInput, isJobCancelled: state.isJobCancelled }));
 vi.mock("@localmesh/engine", () => ({
   parseValidationInput: (value: unknown) => value, runValidationInput: state.runValidationInput,
   validationPlanFromInput: (value: unknown) => value, explainWithOllama: state.explainWithOllama,
@@ -31,6 +31,7 @@ beforeEach(() => {
   state.calls.length = 0;
   vi.stubEnv("OLLAMA_MODEL", "");
   state.installationClient.mockResolvedValue({ pulls: { get: state.pullsGet } });
+  state.authenticatedBotLogin.mockResolvedValue("dot75[bot]");
   state.pullsGet.mockResolvedValue({ data: { title: "Add table", user: { login: "alice" }, head: { sha: HEAD, repo: { owner: { login: "alice" }, name: "fork" } }, base: { ref: "main" } } });
   state.getTextFile.mockResolvedValue(undefined);
   state.listMigrations.mockResolvedValue([]);
@@ -84,7 +85,7 @@ describe("GitHub worker trusted discovery", () => {
 
   it("fails closed for configured patterns the SQL engine does not support", async () => {
     state.getTextFile.mockResolvedValue("version: 1\npostgres: {}\nmigrations:\n  up_pattern: '*.sql'\n");
-    await expect(validateJob(job)).rejects.toThrow("custom patterns cannot be safely interpreted");
+    await expect(validateJob(job)).rejects.toThrow("raw SQL adapter requires migration patterns");
     expect(state.runValidationInput).not.toHaveBeenCalled();
   });
 

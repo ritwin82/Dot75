@@ -1,4 +1,6 @@
 name: LocalMesh analysis
+env:
+  DOT75_DELIVERY_MODE: action
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]

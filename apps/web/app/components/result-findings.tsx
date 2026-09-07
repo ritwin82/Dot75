@@ -1,4 +1,4 @@
-import { findingCategory, findingGuidance, type Finding, type ValidationResult } from "@localmesh/shared";
+import { findingCategory, findingFingerprint, findingGuidance, type Finding, type ValidationResult } from "@localmesh/shared";
 
 export function ResultFindings({ result }: { result: ValidationResult }) {
   const groups = new Map<string, { finding: Finding; contexts: string[] }>();
@@ -21,6 +21,7 @@ export function ResultFindings({ result }: { result: ValidationResult }) {
         <h3>{f.title}</h3><p className="verified-message">{f.message}</p>
         <p><strong>Why this matters: </strong>{guidance.impact}</p><p><strong>Next step: </strong>{guidance.action}</p>
         <p className="occurrences"><strong>Observed in: </strong>{contexts.join("; ")}</p>
+        <p className="occurrences"><strong>Recurrence fingerprint: </strong><code>{findingFingerprint(f).slice(0, 16)}</code></p>
         {f.file && <p><strong>Migration: </strong><code>{f.file}{f.line ? `:${f.line}` : ""}</code></p>}
         {f.evidence && <details><summary>Inspect database evidence</summary><pre>{JSON.stringify(f.evidence, null, 2)}</pre></details>}
       </article>;

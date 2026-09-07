@@ -12,12 +12,28 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
   api:
     build: { context: ., dockerfile: apps/api/Dockerfile }
     env_file: .env
     environment:
       DATABASE_URL: postgresql://localmesh:localmesh@metadata:5432/localmesh
     ports: ["4100:4100"]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4100/health/ready').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     depends_on:
       metadata: { condition: service_healthy }
   worker:
@@ -26,15 +42,32 @@ services:
     environment:
       DATABASE_URL: postgresql://localmesh:localmesh@metadata:5432/localmesh
       OLLAMA_URL: http://host.docker.internal:11434
+      LOCALMESH_DISCOVERY_CACHE: /tmp/localmesh-cache/github
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=128m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 256
     depends_on:
       metadata: { condition: service_healthy }
   web:
     build: { context: ., dockerfile: apps/web/Dockerfile }
     environment:
-      NEXT_PUBLIC_API_URL: http://api:4100
+      DOT75_INTERNAL_API_URL: http://api:4100
+      NEXT_PUBLIC_API_URL: http://localhost:4100
     ports: ["3000:3000"]
-    depends_on: [api]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=64m", "/app/apps/web/.next/cache:rw,nosuid,nodev,noexec,size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 128
+    depends_on:
+      api: { condition: service_healthy }
 volumes:
   localmesh_metadata:

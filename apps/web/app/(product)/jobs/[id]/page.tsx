@@ -2,12 +2,14 @@ import type { Metadata } from "next";
 import type { ValidationResult } from "@localmesh/shared";
 import { ResultFindings } from "../../../components/result-findings";
 import { RefreshResult } from "../../../components/refresh-result";
+import {apiFetch,githubSignInUrl} from "../../../lib/api";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Migration check" };
 type Job = { id: string; owner: string; repo: string; pr_number: number; status: string; result?: ValidationResult; error?: string };
 async function getJob(id: string): Promise<Job | null> {
-  const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100"}/api/jobs/${encodeURIComponent(id)}`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+  const response = await apiFetch(`/api/jobs/${encodeURIComponent(id)}`);
+  if(response.status===401)throw new Error("AUTH_REQUIRED");
   if (response.status === 404) return null;
   if (!response.ok) throw new Error("API unavailable");
   return response.json();
@@ -16,7 +18,7 @@ async function getJob(id: string): Promise<Job | null> {
 export default async function Detail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   let job: Job | null;
-  try { job = await getJob(id); } catch { return <section className="not-found"><h1>Unable to load this check</h1><p>The validation API is unavailable. Start the API and database, then refresh this page.</p><a href="/dashboard">Back to dashboard</a></section>; }
+  try { job = await getJob(id); } catch(error) { if(error instanceof Error&&error.message==="AUTH_REQUIRED")return <section className="contract-auth"><div className="product-kicker">Private validation evidence</div><h2>Sign in to investigate this run</h2><p>Dot75 will verify that your GitHub account can access the source repository.</p><a className="primary-button" href={githubSignInUrl(`/jobs/${id}`)}>Sign in with GitHub</a></section>;return <section className="not-found"><h1>Unable to load this check</h1><p>The validation API is unavailable. Start the API and database, then refresh this page.</p><a href="/dashboard">Back to dashboard</a></section>; }
   if (!job) return <section className="not-found"><h1>Check not found</h1><p>No validation exists at this address.</p><a href="/dashboard">Back to dashboard</a></section>;
   const r = job.result;
   const ai = r?.explanation;
@@ -34,8 +36,9 @@ export default async function Detail({ params }: { params: Promise<{ id: string 
       <a className="product-link" href="/dashboard">Back to dashboard</a>
       <div className="detail-title"><div><div className="product-kicker">{job.owner}/{job.repo} · PR #{job.pr_number}</div><h1>Migration review</h1></div><span className={`status status-large ${job.status}`}><i/>{job.status}</span></div>
       <p>{summary}</p>
+      {r?.status==="failed"&&<a className="primary-button remediation-link" href={`/jobs/${encodeURIComponent(job.id)}/remediation`}>Open verified remediation lab</a>}
       {job.owner === "local-demo" && <p className="scope-note">Local demo · simulated PRs executed in real PostgreSQL. GitHub delivery was not tested.</p>}
-      <RefreshResult active={active || pending}/>
+      <RefreshResult active={active || pending} jobId={job.id}/>
       {job.error && <details className="service-error"><summary>Inspect service error</summary><pre>{job.error}</pre></details>}
     </section>
     {r && <>
@@ -43,7 +46,7 @@ export default async function Detail({ params }: { params: Promise<{ id: string 
         <div><strong>{r.orders.length}</strong><span>Execution orders tested</span></div>
         <div><strong>{r.comparedPullRequests.length}</strong><span>Related PRs compared</span></div>
         <div><strong>{r.scope?.contractMappings ?? "—"}</strong><span>Enabled contract mappings</span></div>
-        <div><strong>{ai?.source === "ollama" ? "Local AI" : pending ? "Preparing" : "Evidence"}</strong><span>{ai?.model ?? "Explanation source"}</span></div>
+        <div><strong>{r.groupCoverage?.tested.length ?? 0}</strong><span>Three-PR permutations</span></div>
       </section>
       <section className="ai-review" aria-labelledby="ai-heading">
         <div className="product-kicker">{ai?.source === "ollama" && !pending ? "Ollama explanation" : pending ? "Ollama is preparing an explanation" : "Explanation from recorded evidence"}</div>
@@ -66,16 +69,20 @@ export default async function Detail({ params }: { params: Promise<{ id: string 
           </div>)}</div>
         </section>
         <ResultFindings result={r}/>
+        <section className="detail-section"><h2>Fixture-state comparison</h2>{r.dataDifferences?.length ? <div className="data-difference-list">{r.dataDifferences.map((difference) => <article key={difference.table}><code>{difference.table}</code><p>{difference.table.startsWith("sequence:")?"Sequence position differs between orders.":`${difference.first?.rowCount ?? "missing"} row(s) versus ${difference.second?.rowCount ?? "missing"} row(s).`} Fingerprints <code>{difference.first?.fingerprint.slice(0,12) ?? "missing"}</code> / <code>{difference.second?.fingerprint.slice(0,12) ?? "missing"}</code>.</p>{(difference.first?.sampleRows?.length||difference.second?.sampleRows?.length)?<details><summary>Representative fixture rows</summary><div className="sql-comparison"><pre>{JSON.stringify(difference.first?.sampleRows??[],null,2)}</pre><pre>{JSON.stringify(difference.second?.sampleRows??[],null,2)}</pre></div></details>:null}</article>)}</div> : <p className="section-help">No order-dependent fixture-state or sequence differences were recorded.</p>}</section>
         <section className="detail-section"><h2>Rollback checks</h2>{r.rollbacks.length ? r.rollbacks.map((rollback) => <div className="rollback-row" key={rollback.migration}><code>{rollback.migration}</code><strong>{rollback.status.replaceAll("_", " ")}</strong><p>Schema restored: {rollback.schemaRestored ? "yes" : "no"} · Fixture data restored: {rollback.dataRestored === undefined ? "not checked" : rollback.dataRestored ? "yes" : "no"}</p></div>) : <p className="section-help">No rollback results were recorded. This is not evidence that rollback is safe.</p>}</section>
       </div><aside className="detail-aside">
-        <section className="side-section"><div className="product-kicker">Test coverage</div><h3>Scope of this result</h3>
+      <section className="side-section"><div className="product-kicker">Test coverage</div><h3>Scope of this result</h3>
           <p>Compared PRs: {r.comparedPullRequests.map((pr) => `#${pr}`).join(", ") || "none"}</p>
           <p>Skipped unrelated PRs: {r.scope ? r.scope.skippedPrs.map((pr) => `#${pr}`).join(", ") || "none" : "not recorded"}</p>
           <p>{r.scope?.fixtureFiles ?? "Unknown number of"} fixture file(s). Fixtures are test data, not production records.</p>
-          <p>Comparisons are pairwise with the current PR. All-PR permutations are not covered.</p>
+          <p>Related pairs are tested in both orders. Connected three-PR groups run within the configured permutation budget; unexecuted combinations remain explicitly untested.</p>
           {!r.scope?.contractMappings && <p>No enabled contract mappings were recorded. Contract coverage is not established.</p>}
+          <a className="product-link" href={`/repositories/${encodeURIComponent(job.owner)}/${encodeURIComponent(job.repo)}/compatibility`}>Open compatibility map</a>
         </section>
         <section className="side-section"><div className="product-kicker">Affected objects</div><h2>{r.affectedObjects.length}</h2><div className="objects">{r.affectedObjects.map((object) => <span className="object" key={object.id}>{object.id}</span>)}</div>{!r.affectedObjects.length && <p>No schema changes were measured. Data-only migrations can still change rows.</p>}</section>
+        <section className="side-section"><div className="product-kicker">Immutable provenance</div><h3>Compatibility receipt</h3><p>Base <code>{r.baseSha}</code></p><p>Head <code>{r.headSha}</code></p><p>Digest <code>{r.provenance?.inputDigest ?? "not recorded"}</code></p><p>Engine {r.provenance?.engineVersion ?? "not recorded"}</p></section>
+        <section className="side-section"><div className="product-kicker">Portable evidence</div><h3>Download this result</h3><div className="export-links">{(["json","markdown","sarif","junit"] as const).map((format)=><a className="product-link" key={format} href={`${process.env.NEXT_PUBLIC_API_URL??"http://localhost:4100"}/api/jobs/${encodeURIComponent(job.id)}/export/${format}`}>{format.toUpperCase()}</a>)}</div></section>
         <section className="side-section"><h3>How to read this page</h3><p>Schema checks protect database structure. Data contracts protect business rules. Rollback checks measure whether an undo restores the starting state.</p></section>
       </aside></div>
     </>}

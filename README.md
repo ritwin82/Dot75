@@ -1,6 +1,6 @@
-# LocalMesh Sensei
+# Dot75
 
-LocalMesh Sensei finds PostgreSQL migration conflicts that Git cannot see. It executes related pull requests together in both orders, validates database contracts, verifies rollbacks, and publishes deterministic evidence as a required GitHub Check.
+Dot75 is a self-hosted PostgreSQL migration-safety platform. GitHub is the decision surface: one required **`Dot75 / Migration Compatibility`** Check and one bot-owned sticky PR comment carry the deterministic verdict. The local web app is the authenticated investigation and contract-configuration workbench. `localmesh` is the portable engine CLI used by every delivery path.
 
 AI is optional. When Ollama is available it explains verified failures and proposes safer SQL, but it never decides whether a check passes.
 
@@ -21,26 +21,28 @@ pnpm localmesh validate --input input-41.json --output result-41.json
 
 Every new result carries the exact tested revisions, coverage decisions, and a SHA-256 input receipt. AI remains optional and cannot change the verdict.
 
-## What the MVP does
+## What ships
 
 - Rebuilds the target branch in the configured PostgreSQL 14–17 image.
 - Discovers migration changes in the current and other open pull requests.
 - Diffs PostgreSQL catalogs and builds dependency-aware change sets.
-- Skips unrelated PRs and executes related pairs as `A → B` and `B → A`.
-- Detects SQL failures and order-dependent final schema fingerprints.
-- Validates Git-committed schema and fixture-backed data contracts.
+- Skips unrelated PRs, executes related pairs in both orders, and runs bounded three-PR permutations with explicit untested coverage.
+- Detects SQL failures and order-dependent final schema or fixture-data state.
+- Validates templates and custom schema/SQL contracts from the trusted base revision.
 - Tests paired `.up.sql` and `.down.sql` files and reports unsafe or missing rollbacks.
 - Warns about blocking indexes, eager constraint validation, and likely rewrites.
-- Publishes a required `LocalMesh Sensei` Check and serves a read-only local dashboard.
+- Publishes the required `Dot75 / Migration Compatibility` Check and exactly one bot-owned sticky comment.
+- Provides authenticated compatibility maps, recurrence fingerprints, rollback evidence, portable exports, SSE progress, a reviewed config-PR editor, and a verified local remediation lab.
+- Supports raw SQL, Prisma, Drizzle, Flyway, and Liquibase formatted SQL discovery. Rails, Django, and Alembic are registered as code-driven adapters and fail closed until isolated project-container execution is enabled.
 
 ## Architecture
 
 | Component | Responsibility |
 |---|---|
 | `apps/action` | GitHub Action discovery, CLI invocation, provenance-checked publication |
-| `apps/api` | Signed GitHub webhooks, Check creation, job API, durable queue |
+| `apps/api` | Signed GitHub webhooks, OAuth, authorized investigation API, migrations, durable queues |
 | `apps/worker` | GitHub revision loading, PostgreSQL containers, validation orchestration |
-| `apps/web` | Job overview and detailed review dashboard |
+| `apps/web` | Investigation, recurrence, rollback, contracts, exports, remediation |
 | `packages/inspector` | Normalized PostgreSQL catalog snapshots and dependency edges |
 | `packages/engine` | Candidate filtering, execution orders, rollback and performance analysis |
 | `packages/contracts` | Six contract templates, mappings, fixtures, suggestions |
@@ -64,12 +66,12 @@ The service metadata is stored in PostgreSQL and jobs are delivered through `pg-
    pnpm install
    ```
 
-2. Copy `.env.example` to `.env` and configure the GitHub App credentials. Multiline private keys may use literal newlines or escaped `\n` sequences.
+2. Copy `.env.example` to `.env`. Configure the GitHub App, GitHub OAuth app, a random `SESSION_SECRET`, and `DOT75_DELIVERY_MODE=app`. Multiline private keys may use literal newlines or escaped `\n` sequences.
 
 3. Create a private GitHub App using `.github/localmesh-app-manifest.example.json`. Grant only:
 
    - Contents: read
-   - Pull requests: read
+   - Pull requests: write (read PR metadata and maintain the single sticky comment)
    - Checks: write
    - Metadata: read
 
@@ -85,11 +87,11 @@ The service metadata is stored in PostgreSQL and jobs are delivered through `pg-
 
    The dashboard is available at `http://localhost:3000` and API health at `http://localhost:4100/health`.
 
-6. Configure branch protection to require the `LocalMesh Sensei` Check and require branches to be current. Repositories using GitHub merge queue receive a final `merge_group` check against the queue SHA.
+6. Configure branch protection to require `Dot75 / Migration Compatibility` and require branches to be current. Repositories using GitHub merge queue receive a final `merge_group` check against the queue SHA.
 
 ## Migration and contract conventions
 
-Migration filenames must end with `.up.sql` or `.down.sql`. A leading integer controls execution order; lexical path order breaks ties. Forward-only SQL is allowed and reported as non-reversible.
+Raw migrations end with `.up.sql` or `.down.sql`; a leading integer controls order. Configuration version 2 can select Prisma, Drizzle, Flyway, or Liquibase formatted SQL adapters. Forward-only SQL is reported as non-reversible.
 
 Mappings live in `.localmesh/contracts.yml` and must be committed before enforcement. Six templates are included: users, orders, payments, inventory, soft deletion, and multi-tenancy. SQL fixtures under `.localmesh/fixtures` are loaded only into disposable databases.
 
@@ -116,12 +118,6 @@ The benchmark contains 20 known-conflicting and 20 known-safe pairs and reports 
 - The worker stops its test container in `finally`, including error paths.
 - GitHub annotations are capped at 50; the full result remains in the local dashboard.
 
-## Demo pitch
-
-Open two PRs that pass alone but both modify the same database contract. Show LocalMesh selecting only that related pair, executing both orders, failing the required Check with PostgreSQL evidence, identifying the incomplete rollback, and then adding an Ollama explanation beneath the authoritative result.
-
-> Git can merge two SQL files cleanly even when their migrations cannot coexist. LocalMesh Sensei tests related pull requests together in real PostgreSQL before merge.
-
 ## Current boundaries
 
-The MVP supports raw PostgreSQL SQL only. It does not include LAN/VPN collaboration, a hosted control plane, SaaS tenancy, production-row ingestion, or adapters for Prisma, Flyway, Liquibase, Rails, Django, or Alembic.
+Dot75 does not ingest production rows or claim measured production latency. Operational findings are static checks plus isolated lock simulation. Code-driven Rails, Django, and Alembic execution remains disabled until an operator provides the planned isolated project-container runner. The web app does not replace GitHub review or act as a merge queue, and verified AI patches are never committed automatically.

@@ -30,8 +30,11 @@ async function invokeCli(cli: string, inputPath: string, outputPath: string): Pr
   });
 }
 async function main(): Promise<void> {
+  if(process.env.DOT75_DELIVERY_MODE!=="action")throw new Error("DOT75_DELIVERY_MODE must be set to action in the trusted workflow before this publisher can run.");
   const octokit = new Octokit({ auth: required(process.env.GITHUB_TOKEN, "GITHUB_TOKEN") });
   const payload = await readJson(required(process.env.GITHUB_EVENT_PATH, "GITHUB_EVENT_PATH"));
+  const repositoryPayload=payload as {repository?:{private?:boolean}};
+  if(repositoryPayload.repository?.private!==true&&process.env.DOT75_ALLOW_PUBLIC_REPOSITORY!=="true")throw new Error("Dot75 is configured for private trusted repositories. An operator must explicitly set DOT75_ALLOW_PUBLIC_REPOSITORY=true to analyze a public repository.");
   const command = process.argv[2];
   if (command === "publish") {
     const event = payload as { workflow_run?: { id: number; run_attempt: number; path: string }; repository?: { name: string; owner: { login: string } } };

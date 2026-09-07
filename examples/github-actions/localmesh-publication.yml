@@ -1,4 +1,6 @@
 name: LocalMesh publication
+env:
+  DOT75_DELIVERY_MODE: action
 on:
   workflow_run:
     workflows: [LocalMesh analysis]

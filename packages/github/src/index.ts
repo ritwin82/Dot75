@@ -1,11 +1,12 @@
-import {createHmac,timingSafeEqual} from "node:crypto";
+import {createHash,createHmac,timingSafeEqual} from "node:crypto";
 import {App} from "@octokit/app";
 import {Octokit} from "@octokit/rest";
-import type {MigrationFile,ValidationResult} from "@localmesh/shared";
-import {checkAnnotations,checkConclusion,checkSummary,checkTitle} from "./reporting.js";
-import {migrationDirectoryPrefix} from "./discovery.js";
+import {ENGINE_VERSION,type MigrationAdapterName,type MigrationFile,type ValidationResult} from "@localmesh/shared";
+import {checkAnnotations,checkConclusion,checkSummary,checkTitle,DOT75_CHECK_NAME} from "./reporting.js";
+import {migrationDescriptor,migrationDirectoryPrefix,migrationFilesFromSource,migrationAdapters} from "./discovery.js";
 export * from "./reporting.js";
 export * from "./discovery.js";
+export * from "./config-pull-request.js";
 
 export function verifyWebhookSignature(raw:Buffer,signature:string|undefined,secret:string):boolean {
   if(!signature?.startsWith("sha256=")) return false;
@@ -23,10 +24,18 @@ export function githubApp():App {
 }
 export async function installationClient(id:number):Promise<Octokit> { return await githubApp().getInstallationOctokit(id) as unknown as Octokit; }
 
-export async function createCheck(octokit:Octokit,owner:string,repo:string,headSha:string):Promise<number> {
-  const {data}=await octokit.checks.create({owner,repo,name:"LocalMesh Sensei",head_sha:headSha,status:"queued",output:{title:"Migration analysis queued",summary:"LocalMesh is preparing isolated PostgreSQL validation."}});
+export function validationIdempotencyKey(owner:string,repo:string,pr:number,headSha:string,baseSha:string,engineVersion=ENGINE_VERSION):string {
+  const digest=createHash("sha256").update(JSON.stringify([owner,repo,pr,headSha,baseSha,engineVersion])).digest("hex");
+  return `dot75:${engineVersion}:${digest}`;
+}
+
+export async function createCheck(octokit:Octokit,owner:string,repo:string,headSha:string,identity?:{pr:number;baseSha:string;engineVersion?:string}):Promise<number> {
+  const externalId=identity?validationIdempotencyKey(owner,repo,identity.pr,headSha,identity.baseSha,identity.engineVersion):undefined;
+  const {data}=await octokit.checks.create({owner,repo,name:DOT75_CHECK_NAME,head_sha:headSha,status:"queued",...(externalId?{external_id:externalId}:{}),output:{title:"Migration analysis queued",summary:"Dot75 is preparing isolated PostgreSQL validation."}});
   return data.id;
 }
+
+export async function authenticatedBotLogin(octokit:Octokit):Promise<string>{const {data}=await octokit.apps.getAuthenticated();if(!data?.slug)throw new Error("GitHub did not identify the authenticated App bot.");return `${data.slug}[bot]`;}
 
 export async function updateCheck(octokit:Octokit,owner:string,repo:string,checkRunId:number,result:ValidationResult):Promise<void> {
   await octokit.checks.update({owner,repo,check_run_id:checkRunId,status:"completed",conclusion:checkConclusion(result),
@@ -34,11 +43,11 @@ export async function updateCheck(octokit:Octokit,owner:string,repo:string,check
 }
 
 export async function markCheckRunning(octokit:Octokit,owner:string,repo:string,id:number):Promise<void> {
-  await octokit.checks.update({owner,repo,check_run_id:id,status:"in_progress",started_at:new Date().toISOString(),output:{title:"Testing migration combinations",summary:"LocalMesh is executing related pull requests in isolated PostgreSQL databases."}});
+  await octokit.checks.update({owner,repo,check_run_id:id,status:"in_progress",started_at:new Date().toISOString(),output:{title:"Testing migration combinations",summary:"Dot75 is executing related pull requests in isolated PostgreSQL databases."}});
 }
 
 export async function markCheckInfrastructureFailure(octokit:Octokit,owner:string,repo:string,id:number,message:string):Promise<void> {
-  await octokit.checks.update({owner,repo,check_run_id:id,status:"completed",conclusion:"failure",output:{title:"LocalMesh could not complete validation",summary:message.slice(0,65000)}});
+  await octokit.checks.update({owner,repo,check_run_id:id,status:"completed",conclusion:"neutral",output:{title:"Dot75 could not complete validation",summary:message.slice(0,65000)}});
 }
 
 export async function cancelCheck(octokit:Octokit,owner:string,repo:string,id:number):Promise<void>{await octokit.checks.update({owner,repo,check_run_id:id,status:"completed",conclusion:"cancelled",output:{title:"Superseded by a newer commit",summary:"This validation was cancelled because the pull request head changed."}});}
@@ -47,13 +56,13 @@ export async function getTextFile(octokit:Octokit,owner:string,repo:string,path:
   try {const {data}=await octokit.repos.getContent({owner,repo,path,ref}); if(Array.isArray(data)||data.type!=="file"||!("content" in data)) return undefined; if(data.encoding!=="base64")throw new Error(`GitHub did not return the complete contents of ${path} at ${ref}.`); const decoded=Buffer.from(data.content,"base64");if(decoded.length!==data.size)throw new Error(`GitHub returned incomplete contents for ${path} at ${ref}.`);return decoded.toString("utf8");} catch(error){if((error as {status?:number}).status===404)return undefined;throw error;}
 }
 
-export async function listMigrations(octokit:Octokit,owner:string,repo:string,ref:string,directory:string):Promise<MigrationFile[]> {
+export async function listMigrations(octokit:Octokit,owner:string,repo:string,ref:string,directory:string,adapter:MigrationAdapterName="raw-sql"):Promise<MigrationFile[]> {
   const {data}=await octokit.git.getTree({owner,repo,tree_sha:ref,recursive:"true"});
   if(data.truncated)throw new Error(`GitHub truncated the migration tree at ${ref}; validation cannot use an incomplete baseline.`);
   const prefix=migrationDirectoryPrefix(directory);
-  const paths=data.tree.filter((e)=>e.type==="blob"&&e.path?.startsWith(prefix)&&e.path.endsWith(".sql")).map((e)=>e.path!);
+  const paths=data.tree.filter((e)=>e.type==="blob"&&e.path?.startsWith(prefix)&&migrationAdapters[adapter].extensions.some((extension)=>e.path!.endsWith(extension))).map((e)=>e.path!);
   const files:MigrationFile[]=[];
-  for(const path of paths){const direction=path.endsWith(".down.sql")?"down":path.endsWith(".up.sql")?"up":undefined;if(!direction)throw new Error(`Unsupported baseline migration ${path}; expected .up.sql or .down.sql.`);const sql=await getTextFile(octokit,owner,repo,path,ref);if(sql===undefined)throw new Error(`Could not read baseline migration ${path} at ${ref}.`);files.push({path,sql,direction,order:migrationOrder(path)});}
+  for(const path of paths){if(!migrationDescriptor(path,adapter))continue;const sql=await getTextFile(octokit,owner,repo,path,ref);if(sql===undefined)throw new Error(`Could not read baseline migration ${path} at ${ref}.`);files.push(...migrationFilesFromSource(path,sql,adapter));}
   return files.sort((a,b)=>a.order-b.order||a.path.localeCompare(b.path));
 }
 
@@ -66,9 +75,9 @@ export async function listSqlFiles(octokit:Octokit,owner:string,repo:string,ref:
   return result.sort((a,b)=>a.path.localeCompare(b.path));
 }
 
-export async function pullRequestMigrations(octokit:Octokit,owner:string,repo:string,pr:number,headSha:string,directory:string):Promise<MigrationFile[]> {
+export async function pullRequestMigrations(octokit:Octokit,owner:string,repo:string,pr:number,headSha:string,directory:string,adapter:MigrationAdapterName="raw-sql"):Promise<MigrationFile[]> {
   const changed=await octokit.paginate(octokit.pulls.listFiles,{owner,repo,pull_number:pr,per_page:100}); const files:MigrationFile[]=[];
-  for(const item of changed.filter((f)=>f.status!=="removed"&&f.filename.startsWith(`${directory.replace(/\/$/,"")}/`)&&f.filename.endsWith(".sql"))){const direction=item.filename.endsWith(".down.sql")?"down":item.filename.endsWith(".up.sql")?"up":undefined;if(!direction)continue;const sql=await getTextFile(octokit,owner,repo,item.filename,headSha);if(sql!==undefined)files.push({path:item.filename,sql,direction,order:migrationOrder(item.filename)});}
+  for(const item of changed.filter((f)=>f.status!=="removed"&&f.filename.startsWith(`${directory.replace(/\/$/,"")}/`)&&migrationAdapters[adapter].extensions.some((extension)=>f.filename.endsWith(extension)))){if(!migrationDescriptor(item.filename,adapter))continue;const sql=await getTextFile(octokit,owner,repo,item.filename,headSha);if(sql!==undefined)files.push(...migrationFilesFromSource(item.filename,sql,adapter));}
   return files.sort((a,b)=>a.order-b.order||a.path.localeCompare(b.path));
 }
 

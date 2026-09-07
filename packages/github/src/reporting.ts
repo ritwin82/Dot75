@@ -2,6 +2,7 @@ import type { Octokit } from "@octokit/rest";
 import { findingCategory, findingGuidance, type Finding, type ValidationResult } from "@localmesh/shared";
 
 export const STICKY_COMMENT_MARKER = "<!-- localmesh-sensei:validation -->";
+export const DOT75_CHECK_NAME = "Dot75 / Migration Compatibility";
 const MAX_BODY_LENGTH = 60_000;
 
 function truncateUtf8(value: string, limit: number): string {
@@ -80,6 +81,7 @@ function findingContexts(result: ValidationResult): FindingContext[] {
 export function checkConclusion(result: ValidationResult): "cancelled" | "failure" | "success" | "neutral" {
   if (result.status === "cancelled") return "cancelled";
   if (result.status === "queued" || result.status === "running") return "neutral";
+  if (!result.orders.length && result.contracts.some((finding) => finding.code === "ANALYSIS_INCOMPLETE")) return "neutral";
   if (result.status === "failed" || result.orders.some((order) => !order.passed)
     || findingContexts(result).some(({ finding }) => finding.severity === "error")) return "failure";
   return "success";
@@ -167,6 +169,17 @@ export function checkSummary(result: ValidationResult): string {
     ""
   ];
   if (result.affectedObjects?.length) lines.push(`Affected catalog objects: ${result.affectedObjects.map((object) => code(object.id)).join(", ")}.`, "");
+  if (result.compatibility?.length) {
+    lines.push("### PR compatibility", "", "| Pull requests | Classification | Verified passing order |", "| --- | --- | --- |");
+    for (const relationship of result.compatibility) lines.push(`| ${relationship.pullRequests.map((pr) => `#${pr}`).join(" ↔ ")} | ${text(relationship.status.replaceAll("_", " "))} | ${relationship.passingOrder?.map((pr) => `#${pr}`).join(" → ") ?? "—"} |`);
+    lines.push("");
+  }
+  if (result.groupCoverage && (result.groupCoverage.tested.length || result.groupCoverage.untested.length)) lines.push(`Three-PR coverage: ${result.groupCoverage.tested.length} permutation(s) tested; ${result.groupCoverage.untested.length} left untested by the ${result.groupCoverage.permutationBudget}-execution budget.`, "");
+  if (result.dataDifferences?.length) {
+    lines.push("### Fixture-state differences", "");
+    for (const difference of result.dataDifferences) lines.push(`- ${code(difference.table)}: ${difference.first?.rowCount ?? "missing"} row(s) / ${code(difference.first?.fingerprint ?? "missing")} versus ${difference.second?.rowCount ?? "missing"} row(s) / ${code(difference.second?.fingerprint ?? "missing")}.`);
+    lines.push("");
+  }
   if (result.rollbacks.length) {
     lines.push("### Rollback results", "");
     for (const rollback of result.rollbacks) lines.push(`- ${code(rollback.migration)}: **${rollback.status.replaceAll("_", " ")}**; schema restored: ${rollback.schemaRestored ? "yes" : "no"}; fixture data restored: ${rollback.dataRestored === undefined ? "not checked" : rollback.dataRestored ? "yes" : "no"}.`);
@@ -175,9 +188,12 @@ export function checkSummary(result: ValidationResult): string {
   if (entries.length) lines.push("### Findings and next steps", "", ...entries.slice(0, 40).flatMap((entry) => findingLines(result, entry)));
   if (entries.length > 40) lines.push(`${entries.length - 40} additional finding(s) are available in the result JSON.`, "");
   const command = result.provenance
-    ? `pnpm localmesh validate --input input-${result.currentPr}.json --output result-${result.currentPr}.json`
-    : `pnpm --filter @localmesh/worker validate --job ${result.jobId}`;
-  lines.push("### Reproduce", "", `Run ${code(command)} using the same base, PR heads, fixtures, and configuration.`, "Verdicts come from PostgreSQL execution and deterministic checks. Suggested fixes are guidance and require review.");
+    ? `localmesh repro --input input-${result.currentPr}.json --output result-${result.currentPr}.json`
+    : `localmesh validate --job ${result.jobId}`;
+  lines.push("### Reproduce", "", `Run ${code(command)} using the same base, PR heads, fixtures, and configuration.`);
+  if (result.links?.investigation) lines.push(`[Open the Dot75 investigation](${result.links.investigation})`);
+  if (result.links?.replay) lines.push(`[Download the replay bundle](${result.links.replay})`);
+  lines.push("Verdicts come from PostgreSQL execution and deterministic checks. Suggested fixes are guidance and require review.");
   const summary = lines.join("\n");
   return Buffer.byteLength(summary) <= MAX_BODY_LENGTH ? summary : `${truncateUtf8(summary, MAX_BODY_LENGTH - 100)}\n\nReport truncated. See the saved result JSON for complete evidence.`;
 }
@@ -197,13 +213,27 @@ export function checkAnnotations(result: ValidationResult): CheckAnnotation[] {
 }
 
 export function stickyComment(result: ValidationResult): string {
+  const check = result.links?.check ? `[Check](${result.links.check})` : `**${DOT75_CHECK_NAME}** Check`;
+  const investigation = result.links?.investigation ? ` · [Investigate](${result.links.investigation})` : "";
   if (checkConclusion(result) === "success") {
     const warnings = findingContexts(result).filter(({ finding }) => finding.severity === "warning").length;
     const verdict = result.orders.length === 0 && result.provenance?.currentPrFiles.length === 0
       ? "no migration changes; PostgreSQL execution was not needed" : `${result.orders.length} tested order(s) passed`;
-    return truncateUtf8(`${STICKY_COMMENT_MARKER}\n✅ LocalMesh: ${verdict} for ${prLabel(result, result.currentPr)} at ${code(result.headSha)} against base ${code(result.baseSha)}; ${warnings} warning(s). See the check for coverage and evidence.`, MAX_BODY_LENGTH);
+    return truncateUtf8(`${STICKY_COMMENT_MARKER}\n✅ **Dot75 passed**: ${verdict} for ${prLabel(result, result.currentPr)} at ${code(result.headSha.slice(0, 12))} against base ${code(result.baseSha.slice(0, 12))}; ${warnings} warning(s). ${check}${investigation}.`, MAX_BODY_LENGTH);
   }
-  return `${STICKY_COMMENT_MARKER}\n${checkSummary(result)}`;
+  const entries = findingContexts(result);
+  const top = entries.filter(({ finding }) => finding.severity === "error").slice(0, 5);
+  const combined = result.orders.filter((order) => order.order.length > 1);
+  const related = result.comparedPullRequests.map((number) => prLabel(result, number)).join(", ") || "none";
+  const rollback = result.rollbacks.length ? `${result.rollbacks.filter((item) => item.status === "safe").length}/${result.rollbacks.length} safe` : "not tested";
+  const lines = [
+    STICKY_COMMENT_MARKER,
+    `❌ **Dot75 blocked this merge** for ${prLabel(result, result.currentPr)}.`,
+    `Related PRs: ${related}. Combined orders: ${combined.filter((order) => order.passed).length}/${combined.length} passed. Rollbacks: ${rollback}.`,
+    ...top.map(({ finding }) => `- **${text(finding.title)}** (${code(finding.code)}): ${text(finding.message)}`),
+    `See the required ${check} for complete evidence and reproduction details${investigation}.`
+  ];
+  return truncateUtf8(lines.join("\n"), MAX_BODY_LENGTH);
 }
 
 export async function upsertStickyComment(octokit: Octokit, owner: string, repo: string, result: ValidationResult,

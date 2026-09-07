@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { parseMappings } from "@localmesh/contracts";
-import { parseConfig, parseOperationalMetadata, type Finding, type LocalMeshConfig, type ValidationJob, type ValidationResult } from "@localmesh/shared";
+import { deriveCompatibilityRelationships, ENGINE_VERSION, parseConfig, parseOperationalMetadata, type Finding, type LocalMeshConfig, type ValidationJob, type ValidationResult } from "@localmesh/shared";
 import { deterministicExplanation } from "./ollama.js";
 import { PostgresValidationEnvironment } from "./runtime.js";
 import { resultFindings, runValidationPlan, type ValidationPlan } from "./validation-plan.js";
@@ -93,6 +93,8 @@ export function validationPlanFromInput(input: ValidationInput): ValidationPlan 
     baseline: input.baseline, current: input.current, candidates: input.candidates,
     extensions: input.config.postgres.extensions, fixtures: input.fixtures.map((fixture) => fixture.sql),
     requireDataContracts: input.config.checks.require_data_contracts, verifyRollback: input.config.checks.verify_rollback,
+    compareDataState:input.config.checks.compare_fixture_state,excludeDataColumns:input.config.data_state.exclude_columns,maxDataDifferences:input.config.data_state.max_differences,
+    maxGroupSize:input.config.checks.max_group_size,maxGroupPermutations:input.config.checks.max_group_permutations,
     ...(input.mappingsText !== undefined ? { mappings: parseMappings(input.mappingsText) } : {}),
     ...(input.metadataText !== undefined ? { metadata: parseOperationalMetadata(input.metadataText) } : {})
   };
@@ -111,7 +113,7 @@ export async function runValidationInput(source: unknown): Promise<ValidationRes
       affectedObjects: [], dependencies: [], comparedPullRequests: [], orders: [], contracts: [], rollbacks: [], performance: [],
       scope: {
         candidatePrs: input.candidates.map((candidate) => candidate.pr), skippedPrs: input.candidates.map((candidate) => candidate.pr),
-        contractMappings: plan.mappings?.mappings.filter((mapping) => mapping.enabled).length ?? 0, fixtureFiles: input.fixtures.length, rollbackChecked: false,
+        contractMappings: plan.mappings?.mappings?.filter((mapping) => mapping.enabled !== false).length ?? 0, fixtureFiles: input.fixtures.length, rollbackChecked: false,
         decisions: input.candidates.map((candidate) => ({ pr: candidate.pr, decision: "skipped", reason: input.discoveryFindings?.some((finding) => finding.severity === "error") ? "Discovery failed; no partial SQL result can establish compatibility." : "The current revision changes no migration files." }))
       }
     };
@@ -129,8 +131,9 @@ export function completeValidationResult(input: ValidationInput, result: Validat
   if (resultFindings(result).some((finding) => finding.severity === "error")) result.status = "failed";
   result.provenance = {
     ...input.provenance, pullRequests: input.provenance?.pullRequests ?? [], currentPrFiles: input.current.files.map((file) => file.path),
-    inputDigest: validationInputDigest(input), engineVersion: "0.1.0"
+    inputDigest: validationInputDigest(input), engineVersion: ENGINE_VERSION
   };
+  result.compatibility = deriveCompatibilityRelationships(result);
   result.explanation = deterministicExplanation(resultFindings(result));
   if (!result.orders.length && result.status === "passed") result.explanation.cause = "No migration files changed; PostgreSQL execution was not needed.";
   result.explanationStatus = "complete";

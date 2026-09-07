@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { ensureSchema, pool, saveJob, setJobStatus } from "@localmesh/db";
+import { migrateDatabase, pool, saveJob, setJobStatus } from "@localmesh/db";
 import { deterministicExplanation, explainWithOllama, PostgresValidationEnvironment } from "@localmesh/engine";
 import type { ValidationJob } from "@localmesh/shared";
 import { demoScenarios } from "./demo-scenarios.js";
@@ -10,7 +10,7 @@ import { explanationContext, resultFindings, runValidationPlan } from "./validat
 // --no-ai is useful for a fast deterministic regression run.
 let environment: PostgresValidationEnvironment | undefined;
 try {
-  await ensureSchema();
+  await migrateDatabase();
   environment = await PostgresValidationEnvironment.start("16");
   const selected = process.argv.find((arg) => arg.startsWith("--scenario="))?.split("=")[1];
   if (selected && !demoScenarios.some((scenario) => scenario.name === selected)) throw new Error(`Unknown demo scenario: ${selected}`);

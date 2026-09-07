@@ -4,3 +4,4 @@ export * from "./ollama.js";
 export * from "./runtime.js";
 export * from "./validation-plan.js";
 export * from "./input.js";
+export * from "./remediation.js";

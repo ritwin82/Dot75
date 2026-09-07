@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { explainWithOllama, parseValidationInput, runValidationInput, validationPlanFromInput } from "@localmesh/engine";
-import { createDiskDiscoveryCache, discoverMigrationPullRequests, discoverRevisionMigrations, getTextFile, installationClient, listMigrations, listSqlFiles, markCheckInfrastructureFailure, markCheckRunning, updateCheck, type DiscoveryIssue } from "@localmesh/github";
+import { authenticatedBotLogin, createDiskDiscoveryCache, discoverMigrationPullRequests, discoverRevisionMigrations, getTextFile, installationClient, listMigrations, listSqlFiles, markCheckInfrastructureFailure, markCheckRunning, updateCheck, upsertStickyComment, type DiscoveryIssue } from "@localmesh/github";
 import { defaultConfig, parseConfig, type Finding, type ValidationJob, type ValidationResult } from "@localmesh/shared";
-import { isJobCancelled, setJobStatus } from "@localmesh/db";
+import { appendJobEvent, isJobCancelled,saveReplayInput, setJobStatus } from "@localmesh/db";
 import { explanationContext, resultFindings } from "./validation-plan.js";
 
 function discoveryFindings(issues: DiscoveryIssue[], currentPr: number): Finding[] {
@@ -18,26 +18,30 @@ export async function validateJob(job: ValidationJob): Promise<ValidationResult>
     const octokit = await installationClient(job.installationId);
     if (job.checkRunId) await markCheckRunning(octokit, job.owner, job.repo, job.checkRunId);
     await setJobStatus(job.id, "running");
+    await appendJobEvent(job.id,"discovery","started","Discovering immutable migration revisions and related pull requests.");
     // PR SQL is untrusted input; policies, fixtures and metadata come from the exact target revision.
     const read = (path: string) => getTextFile(octokit, job.owner, job.repo, path, job.baseSha);
     const configText = await read("localmesh.yml");
     const config = configText !== undefined ? parseConfig(configText) : defaultConfig;
-    if (config.migrations.up_pattern !== "*.up.sql" || config.migrations.down_pattern !== "*.down.sql") throw new Error("This LocalMesh engine requires migration patterns *.up.sql and *.down.sql; custom patterns cannot be safely interpreted.");
+    if (config.migrations.adapter === "raw-sql" && (config.migrations.up_pattern !== "*.up.sql" || config.migrations.down_pattern !== "*.down.sql")) throw new Error("The raw SQL adapter requires migration patterns *.up.sql and *.down.sql.");
     const pr = job.prNumber === 0 ? {
       title: "Merge queue", user: { login: "github-merge-queue" }, base: { ref: "" },
       head: { repo: { owner: { login: job.owner }, name: job.repo } }
     } : (await octokit.pulls.get({ owner: job.owner, repo: job.repo, pull_number: job.prNumber })).data;
     if (!pr.head.repo) throw new Error(`The source repository for PR #${job.prNumber} is unavailable.`);
     const cache = createDiskDiscoveryCache(process.env.LOCALMESH_DISCOVERY_CACHE ?? ".localmesh-cache/github");
-    const revisionOptions = { owner: job.owner, repo: job.repo, baseSha: job.baseSha, directory: config.migrations.directory, cache };
+    const revisionOptions = { owner: job.owner, repo: job.repo, baseSha: job.baseSha, directory: config.migrations.directory, adapter:config.migrations.adapter, cache };
     const current = await discoverRevisionMigrations(octokit, { ...revisionOptions, headSha: job.headSha, headOwner: pr.head.repo.owner.login, headRepo: pr.head.repo.name });
+    await appendJobEvent(job.id,"discovery","completed",`Discovered ${current.migrations.length} current migration file(s).`,{issues:current.issues.length});
     const hasChanges = current.migrations.length > 0 || current.issues.length > 0;
+    await appendJobEvent(job.id,"baseline","started","Loading the trusted base migrations, fixtures, contracts, and operational metadata.");
     const [baseline, peers, fixtures, mappingText, metadataText] = hasChanges ? await Promise.all([
-      listMigrations(octokit, job.owner, job.repo, job.baseSha, config.migrations.directory),
+      listMigrations(octokit, job.owner, job.repo, job.baseSha, config.migrations.directory,config.migrations.adapter),
       job.prNumber !== 0 && config.checks.compare_open_pull_requests ? discoverMigrationPullRequests(octokit, { ...revisionOptions, baseRef: pr.base.ref, excludePr: job.prNumber, includeDrafts: true }) : Promise.resolve({ pullRequests: [], issues: [] }),
       listSqlFiles(octokit, job.owner, job.repo, job.baseSha, config.contracts.fixtures_directory),
       read(config.contracts.mappings_file), read(config.performance.metadata_file)
     ]) : [[], { pullRequests: [], issues: [] }, [], undefined, undefined];
+    await appendJobEvent(job.id,"baseline","completed",`Loaded ${baseline.length} baseline migration(s), ${fixtures.length} fixture file(s), and ${peers.pullRequests.length} related pull request(s).`);
     const input = parseValidationInput({
       version: 1, job, config, baseline, current: { pr: job.prNumber, files: current.migrations },
       candidates: peers.pullRequests.map((peer) => ({ pr: peer.number, files: peer.migrations })), fixtures,
@@ -48,15 +52,29 @@ export async function validateJob(job: ValidationJob): Promise<ValidationResult>
         pullRequests: [{ number: job.prNumber, author: pr.user?.login ?? "unknown", headSha: job.headSha, title: pr.title }, ...peers.pullRequests.map((peer) => ({ number: peer.number, author: peer.author, headSha: peer.headSha, title: peer.title }))]
       }
     });
+    await saveReplayInput(job.id,input);
+    await appendJobEvent(job.id,"standalone","started","Executing deterministic PostgreSQL validation in isolated databases.");
     const result = await runValidationInput(input);
+    const standalone=result.orders.find((order)=>order.order.length===1&&order.order[0]===job.prNumber);
+    await appendJobEvent(job.id,"standalone","completed",standalone?.passed?"Standalone migration execution passed.":"Standalone migration execution found blocking evidence.",{passed:standalone?.passed??false});
+    await appendJobEvent(job.id,"relationships","completed",`Executed ${result.orders.filter((order)=>order.order.length>1).length} relationship order(s).`,{relationships:result.compatibility?.length??0,groupCoverage:result.groupCoverage});
+    await appendJobEvent(job.id,"contracts","completed",`Evaluated ${result.contracts.length} configured contract result(s).`);
+    await appendJobEvent(job.id,"rollback","completed",`Evaluated ${result.rollbacks.length} rollback result(s).`);
+    const webOrigin = process.env.WEB_ORIGIN?.replace(/\/$/, "");
+    const githubOrigin=(process.env.GITHUB_WEB_ORIGIN??"https://github.com").replace(/\/$/,"");
+    result.links={...result.links,...(job.checkRunId?{check:`${githubOrigin}/${job.owner}/${job.repo}/runs/${job.checkRunId}`}:{}) ,...(webOrigin?{investigation:`${webOrigin}/jobs/${job.id}`}:{})};
     if (await isJobCancelled(job.id)) { result.status = "cancelled"; return result; }
     const findings = resultFindings(result);
     const model = process.env.OLLAMA_MODEL || config.ai?.model;
     result.explanationStatus = model ? "pending" : "complete";
     // Make verified evidence available before waiting on local inference.
+    await appendJobEvent(job.id,"reporting","started","Publishing the deterministic verdict to the authoritative GitHub Check.");
     await setJobStatus(job.id, result.status, result);
     if (job.checkRunId) await updateCheck(octokit, job.owner, job.repo, job.checkRunId, result);
+    if(job.prNumber>0)await upsertStickyComment(octokit,job.owner,job.repo,result,{botLogin:process.env.DOT75_BOT_LOGIN??await authenticatedBotLogin(octokit)});
+    await appendJobEvent(job.id,"reporting","completed","The deterministic verdict and evidence are available.",{verdict:result.status});
     if (model) {
+      await appendJobEvent(job.id,"explaining","started","Generating optional local AI guidance. The verdict is already final.");
       result.explanation = await explainWithOllama(findings, explanationContext(validationPlanFromInput(input), result), {
         url: process.env.OLLAMA_URL ?? "http://localhost:11434", model, timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? 120000)
       });
@@ -64,11 +82,14 @@ export async function validateJob(job: ValidationJob): Promise<ValidationResult>
       if (await isJobCancelled(job.id)) { result.status = "cancelled"; return result; }
       await setJobStatus(job.id, result.status, result);
       if (job.checkRunId) await updateCheck(octokit, job.owner, job.repo, job.checkRunId, result);
+      await appendJobEvent(job.id,"explaining","completed","Optional AI guidance finished.",{source:result.explanation.source,fallbackReason:result.explanation.fallbackReason});
     }
+    await appendJobEvent(job.id,"completed","completed","Validation run completed.",{verdict:result.status});
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     await setJobStatus(job.id, "failed", undefined, message);
+    try {await appendJobEvent(job.id,"completed","failed","Infrastructure prevented a trustworthy verdict.",{error:message.slice(0,2000)});}catch{/* Preserve the original infrastructure failure. */}
     if (job.checkRunId) {
       try { await markCheckInfrastructureFailure(await installationClient(job.installationId), job.owner, job.repo, job.checkRunId, message); } catch { /* Keep the original failure. */ }
     }

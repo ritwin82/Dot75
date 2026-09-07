@@ -5,7 +5,7 @@ import { getTextFile, updateCheck, upsertStickyComment } from "@localmesh/github
 import { publishResults } from "./publish.js";
 import type { ActionEnvelope } from "./types.js";
 
-vi.mock("@localmesh/github", () => ({ getTextFile: vi.fn(), updateCheck: vi.fn(), upsertStickyComment: vi.fn() }));
+vi.mock("@localmesh/github", () => ({ DOT75_CHECK_NAME: "Dot75 / Migration Compatibility", getTextFile: vi.fn(), updateCheck: vi.fn(), upsertStickyComment: vi.fn(),validationIdempotencyKey:vi.fn(()=>"test-key") }));
 const baseSha = "a".repeat(40);
 const headSha = "b".repeat(40);
 const peerSha = "c".repeat(40);
@@ -15,7 +15,7 @@ function result(): ValidationResult {
   return { jobId: "job", repository: "owner/repo", currentPr: 1, baseSha, headSha, status: "passed", startedAt: "2026-09-07T00:00:00Z",
     affectedObjects: [], dependencies: [], comparedPullRequests: [], contracts: [], rollbacks: [], performance: [],
     orders: [{ order: [1], passed: true, sqlPassed: true, durationMs: 1, findings: [] }],
-    provenance: { currentPrFiles: ["migrations/002_status.up.sql"], pullRequests: [{ number: 1, author: "alice", headSha }] },
+    provenance: { currentPrFiles: ["migrations/002_status.up.sql"], pullRequests: [{ number: 1, author: "alice", headSha }],engineVersion:"0.1.0",inputDigest:"d".repeat(64) },
     scope: { candidatePrs: [], skippedPrs: [], contractMappings: 0, fixtureFiles: 0, rollbackChecked: false } };
 }
 
@@ -55,7 +55,7 @@ describe("privileged workflow result publication", () => {
   it("publishes a proven, fresh PR result and one sticky comment", async () => {
     const { mock, octokit } = client();
     expect(await publishResults(octokit, context, envelope())).toEqual({ published: 1, skipped: 0 });
-    expect(mock.checks.create).toHaveBeenCalledWith(expect.objectContaining({ head_sha: headSha, external_id: "localmesh:100:1:1" }));
+    expect(mock.checks.create).toHaveBeenCalledWith(expect.objectContaining({ head_sha: headSha, external_id: "test-key" }));
     expect(updateCheck).toHaveBeenCalledWith(octokit, "owner", "repo", 500, expect.objectContaining({ currentPr: 1, headSha, baseSha }));
     expect(upsertStickyComment).toHaveBeenCalledTimes(1);
     expect(getTextFile).toHaveBeenCalledWith(octokit, "owner", "repo", context.workflowPath, headSha);
@@ -231,7 +231,7 @@ describe("privileged workflow result publication", () => {
 
   it("does not append duplicate annotations when a workflow_run delivery is retried", async () => {
     const { octokit, mock } = client();
-    mock.checks.listForRef.mockResolvedValue({ data: { check_runs: [{ id: 500, external_id: "localmesh:100:1:1", status: "completed", app: { slug: "github-actions" } }] } });
+    mock.checks.listForRef.mockResolvedValue({ data: { check_runs: [{ id: 500, external_id: "test-key", status: "completed", app: { slug: "github-actions" } }] } });
     await publishResults(octokit, context, envelope());
     expect(mock.checks.create).not.toHaveBeenCalled();
     expect(updateCheck).not.toHaveBeenCalled();

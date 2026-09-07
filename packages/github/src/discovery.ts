@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Octokit } from "@octokit/rest";
-import type { MigrationFile, PullRequestRef } from "@localmesh/shared";
+import type { MigrationAdapterName,MigrationFile, PullRequestRef } from "@localmesh/shared";
 
 /** Store only immutable Git objects here; PR listings and branch names are never cached. */
 export interface DiscoveryCache {
@@ -31,6 +31,7 @@ interface RepositoryOptions {
   /** The trusted, immutable target branch revision used by the validator. */
   baseSha: string;
   directory: string;
+  adapter?: MigrationAdapterName;
   cache?: DiscoveryCache;
 }
 
@@ -62,6 +63,43 @@ export interface PullRequestDiscoveryResult {
 interface TreeFile { path: string; sha: string }
 const shaPattern = /^[a-f0-9]{40}$/i;
 const emptyStats = (): DiscoveryStats => ({ candidatePullRequests: 0, migrationPullRequests: 0, cacheHits: 0, cacheMisses: 0 });
+
+export const migrationAdapters:Record<MigrationAdapterName,{version:1;execution:"sql"|"project-container";extensions:string[]}>= {
+  "raw-sql":{version:1,execution:"sql",extensions:[".sql"]},prisma:{version:1,execution:"sql",extensions:[".sql"]},drizzle:{version:1,execution:"sql",extensions:[".sql"]},
+  flyway:{version:1,execution:"sql",extensions:[".sql"]},liquibase:{version:1,execution:"sql",extensions:[".sql",".xml",".yaml",".yml",".json"]},
+  rails:{version:1,execution:"project-container",extensions:[".rb"]},django:{version:1,execution:"project-container",extensions:[".py"]},alembic:{version:1,execution:"project-container",extensions:[".py"]}
+};
+
+const flywayOrder=(version:string)=>version.split(/[._]/).reduce((value,part)=>value*1000+Number(part),0);
+export function migrationDescriptor(path:string,adapter:MigrationAdapterName="raw-sql"):{direction:"up"|"down";order:number}|undefined{
+  const name=path.split("/").at(-1)??"";
+  if(adapter==="raw-sql"){
+    const direction=path.endsWith(".up.sql")?"up":path.endsWith(".down.sql")?"down":undefined;if(!direction)return undefined;
+    const order=name.match(/^(\d+)/)?.[1];return {direction,order:order?Number(order):Number.MAX_SAFE_INTEGER};
+  }
+  if(adapter==="prisma"){
+    if(name!=="migration.sql")return undefined;const directory=path.split("/").at(-2)??"";const order=directory.match(/^(\d+)/)?.[1];
+    return {direction:"up",order:order?Number(order):Number.MAX_SAFE_INTEGER};
+  }
+  if(adapter==="drizzle") {const order=name.match(/^(\d+)[_-].*\.sql$/)?.[1];return order?{direction:"up",order:Number(order)}:undefined;}
+  if(adapter==="flyway") {
+    const versioned=name.match(/^V([0-9][0-9._]*)__.+\.sql$/i);if(versioned)return {direction:"up",order:flywayOrder(versioned[1]!)};
+    const undo=name.match(/^U([0-9][0-9._]*)__.+\.sql$/i);if(undo)return {direction:"down",order:flywayOrder(undo[1]!)};
+    return /^R__.+\.sql$/i.test(name)?{direction:"up",order:Number.MAX_SAFE_INTEGER}:undefined;
+  }
+  if(adapter==="liquibase"&&name.endsWith(".sql")) {const order=name.match(/^(\d+)/)?.[1];return {direction:"up",order:order?Number(order):Number.MAX_SAFE_INTEGER};}
+  return undefined;
+}
+
+export function migrationFilesFromSource(path:string,sql:string,adapter:MigrationAdapterName="raw-sql"):MigrationFile[] {
+  const descriptor=migrationDescriptor(path,adapter);if(!descriptor)return [];
+  const files:MigrationFile[]=[{path,sql,...descriptor}];
+  if(adapter==="liquibase"&&/--\s*liquibase\s+formatted\s+sql/i.test(sql)) {
+    const rollback=sql.split(/\r?\n/).map((line)=>line.match(/^\s*--\s*rollback\s+(.+)$/i)?.[1]).filter((line):line is string=>Boolean(line));
+    if(rollback.length)files.push({path:`${path}#rollback`,sql:`${rollback.join("\n")}\n`,direction:"down",order:descriptor.order});
+  }
+  return files;
+}
 
 export function createDiskDiscoveryCache(directory: string): DiscoveryCache {
   const filePath = (key: string) => join(directory, `${createHash("sha256").update(key).digest("hex")}.json`);
@@ -145,7 +183,8 @@ export async function discoverRevisionMigrations(octokit: Octokit, options: Revi
   const before = new Map((await treeFiles(octokit, owner, repo, mergeBase, cache, stats)).map((file) => [file.path, file.sha]));
   const after = new Map((await treeFiles(octokit, headOwner, headRepo, headSha, cache, stats)).map((file) => [file.path, file.sha]));
   const baseline = mergeBase === baseSha ? before : new Map((await treeFiles(octokit, owner, repo, baseSha, cache, stats)).map((file) => [file.path, file.sha]));
-  const changed = [...new Set([...before.keys(), ...after.keys()])].filter((path) => path.startsWith(prefix) && path.endsWith(".sql") && before.get(path) !== after.get(path)).sort();
+  const adapter=options.adapter??"raw-sql";const extensions=migrationAdapters[adapter].extensions;
+  const changed = [...new Set([...before.keys(), ...after.keys()])].filter((path) => path.startsWith(prefix) && extensions.some((extension)=>path.endsWith(extension)) && before.get(path) !== after.get(path)).sort();
   const historyChanges: string[] = [];
   const unsupported: string[] = [];
   const migrations: MigrationFile[] = [];
@@ -157,8 +196,8 @@ export async function discoverRevisionMigrations(octokit: Octokit, options: Revi
     }
     // A branch addition already applied identically on the target is not pending.
     if (baseline.get(path) === headBlob) continue;
-    const direction = path.endsWith(".up.sql") ? "up" : path.endsWith(".down.sql") ? "down" : undefined;
-    if (!direction) {
+    const descriptor=migrationDescriptor(path,options.adapter);
+    if (!descriptor) {
       unsupported.push(path);
       continue;
     }
@@ -172,12 +211,11 @@ export async function discoverRevisionMigrations(octokit: Octokit, options: Revi
       if (actual !== headBlob.toLowerCase()) throw new Error(`GitHub blob content does not match its immutable SHA for ${path}.`);
       return decoded.toString("utf8");
     });
-    const order = path.split("/").at(-1)?.match(/^(\d+)/)?.[1];
-    migrations.push({ path, sql, direction, order: order ? Number(order) : Number.MAX_SAFE_INTEGER });
+    migrations.push(...migrationFilesFromSource(path,sql,adapter));
   }
   const issues: DiscoveryIssue[] = [];
   if (historyChanges.length) issues.push({ code: "MIGRATION_HISTORY_CHANGED", message: "Previously committed migrations were changed, removed, or renamed. Add a new forward migration and its rollback instead; replaying edited history would not model the deployed database.", files: historyChanges, headSha });
-  if (unsupported.length) issues.push({ code: "UNSUPPORTED_MIGRATION_NAME", message: "SQL files in the migration directory must end in .up.sql or .down.sql so LocalMesh can determine execution direction.", files: unsupported, headSha });
+  if (unsupported.length) issues.push({ code: "UNSUPPORTED_MIGRATION_NAME", message: `SQL files do not match the configured ${options.adapter??"raw-sql"} migration adapter.`, files: unsupported, headSha });
   return { migrations: migrations.sort((a, b) => a.order - b.order || a.path.localeCompare(b.path)), issues, stats };
 }
 
@@ -192,7 +230,7 @@ export async function discoverMigrationPullRequests(octokit: Octokit, options: P
     if (pr.number === options.excludePr || (!options.includeDrafts && pr.draft) || (options.baseRef && pr.base.ref !== options.baseRef)) continue;
     stats.candidatePullRequests++;
     if (!pr.head.repo) throw new Error(`The source repository for open PR #${pr.number} is unavailable; discovery cannot safely omit it.`);
-    const result = await discoverRevisionMigrations(octokit, { owner, repo, baseSha, headSha: pr.head.sha, directory, headOwner: pr.head.repo.owner.login, headRepo: pr.head.repo.name, ...(cache ? { cache } : {}) });
+    const result = await discoverRevisionMigrations(octokit, { owner, repo, baseSha, headSha: pr.head.sha, directory, ...(options.adapter?{adapter:options.adapter}:{}), headOwner: pr.head.repo.owner.login, headRepo: pr.head.repo.name, ...(cache ? { cache } : {}) });
     stats.cacheHits += result.stats.cacheHits;
     stats.cacheMisses += result.stats.cacheMisses;
     if (!result.migrations.length && !result.issues.length) continue;

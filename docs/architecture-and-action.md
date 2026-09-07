@@ -87,11 +87,11 @@ Change the example `push.branches: [main]` if the default branch has another nam
 
 The analysis job has contents/PR read permissions. The `workflow_run` publisher has contents/actions read and checks/PR write permissions and runs on a separate fresh runner. It never executes SQL or artifact-provided code. It validates the repository, originating run and attempt, workflow path, source event, expected workflow contents, target heads, peer heads, live base, and merge-group branch before publishing. A PR-modified analysis workflow cannot produce an accepted passing artifact. Changes to that workflow need to reach the trusted default branch before the new workflow is accepted.
 
-Require the **LocalMesh Sensei** check from the GitHub Actions integration, require branches to be current, and enable its `merge_group` event if using merge queue. Do not enable the Action and GitHub App publisher under the same required-check name for the same repository; choose one delivery path. The example templates are not activated automatically in this checkout.
+Require **`Dot75 / Migration Compatibility`** from the selected GitHub integration, require branches to be current, and enable its `merge_group` event if using merge queue. Set the operator-controlled `DOT75_DELIVERY_MODE` to `action` or `app`; never enable both publishers for one repository. Untrusted PR configuration cannot change this mode. The example templates are not activated automatically in this checkout.
 
 A self-hosted Actions runner initiates outbound connections to GitHub, so this deployment needs no inbound webhook or public local endpoint. [GitHub self-hosted runner communication](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 
-**A read-only token does not make arbitrary SQL safe for a persistent runner.** The current runtime executes SQL as a PostgreSQL superuser inside disposable containers; that can execute programs inside the container. Do not connect public/fork-capable analysis to a trusted persistent runner, production network, host-mounted secrets, shared admin PostgreSQL server, or privileged publication runner. For local-first untrusted analysis, provision disposable self-hosted runner VMs with isolated networking, resource/time limits, and no sensitive metadata. Select their labels with `LOCALMESH_RUNNER_JSON` only after that isolation exists. The default hosted runner is an alternative when locality is not required. [GitHub runner security](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
+**A read-only token does not make arbitrary SQL safe for a persistent runner.** Dot75 creates disposable PostgreSQL containers with bounded memory/CPU/tmpfs, client and server query timeouts, and a unique non-superuser database role. Still keep public forks disabled under the private-trusted-repository model, and never connect analysis to a production network, host-mounted secrets, shared admin database, or privileged publication runner. Use disposable runner VMs for stronger host isolation. [GitHub runner security](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
 
 The supplied workflow does not use `pull_request_target`. Read-only analysis and privileged publication are separated, and fork artifacts are treated as untrusted data. [GitHub secure workflow guidance](https://docs.github.com/en/actions/reference/security/secure-use)
 
@@ -101,7 +101,7 @@ An AI assistant can propose a migration fix. LocalMesh supplies an automatically
 
 The defensible product claim is **continuous evidence of migration compatibility**. It is not a claim that no AI agent could run these commands or that the approach is scientifically unique.
 
-## Implemented improvements and next additions
+## Implemented expansion
 
 Implemented in this change:
 
@@ -111,15 +111,17 @@ Implemented in this change:
 - Compatibility receipts, ownership-aware reports, explicit coverage/skip reasons, and sticky comments.
 - Data-only changes with an empty catalog diff are conservatively compared.
 - Fingerprints preserve whitespace inside SQL literals; semantically different defaults no longer become equal through blanket whitespace normalization.
+- Fixture-state fingerprints, configurable nondeterminism exclusions, bounded three-PR permutations, classified relationships, and verified merge-order evidence.
+- GitHub OAuth authorization, transactional metadata migrations, audit events, SSE progress with polling fallback, Prometheus metrics, readiness/liveness, and JSON/Markdown/SARIF/JUnit exports.
+- A stale-safe contract editor that creates only reviewed configuration PRs, plus queued local remediation that replays every deterministic check and never commits a patch.
+- Versioned adapters for raw SQL, Prisma, Drizzle, Flyway, and Liquibase formatted SQL; code-driven adapters are registered and fail closed pending their isolated executor.
 
-The most valuable next work is measurable, rather than adding more AI text:
+The remaining hardening work is measurable:
 
 | Priority | Addition | Benefit | Correctness condition |
 | --- | --- | --- | --- |
-| 1 | Fixture-state comparison after both orders | Detect successful SQL that leaves different data without needing a predefined contract | Compare deterministic row sets with documented handling for clocks, random IDs, sequences, and nondeterminism |
-| 2 | Reusable isolated baseline templates and bounded single-PR execution cache | Reduce repeated baseline builds and repeated candidate analysis during fan-out | Key by base SHA, all SQL/config/fixtures/metadata, PostgreSQL image identity, and engine version; invalidate when any input changes |
-| 3 | Compatibility graph and verified merge-order suggestions | Show which pending PRs can coexist and which ordering was actually tested | Never infer a safe order from AI text or untested edges |
-| 4 | Budgeted three-PR checks for connected groups | Find interactions that pairwise validation misses | Clearly report tested subsets and remaining coverage gaps |
-| 5 | Broader benchmark corpus and mutation testing | Demonstrate capability beyond variations of duplicate-column collisions | Separate known conflict families, include negatives, and measure false positives and runtime on real Docker runs |
+| 1 | Reusable isolated baseline templates and bounded single-PR execution cache | Reduce repeated baseline builds and repeated candidate analysis during fan-out | Key by base SHA, SQL/config/fixtures/metadata, PostgreSQL image identity, and engine version |
+| 2 | Code-driven adapter container executor | Run Rails, Django, and Alembic migrations without trusting project code on the host | Explicit operator enablement, no external network or host mounts, and framework fixture suites |
+| 3 | Broader matrix, mutation, chaos, accessibility, and visual suites | Prove verdict correctness and user experience continuously | PostgreSQL 14–17, every adapter, failure injection, axe, Playwright, and changed-code coverage gates |
 
-The current code still rebuilds baselines across execution orders and does not maintain a warm PostgreSQL pool. It does not prove arbitrary application correctness, all three-or-more-PR combinations, production-data safety, or order-independent fixture state. Dependency inspection is incomplete for some functions/triggers/dynamic SQL. Performance findings use SQL heuristics and optional operational metadata, not production load measurements. These boundaries should remain visible in the product's claims and evaluation.
+The current code still rebuilds baselines across execution orders and does not maintain a warm PostgreSQL pool. It does not prove arbitrary application correctness, unexecuted combinations, production-data safety, or dependencies hidden inside dynamic SQL. Performance findings use SQL heuristics and declared operational metadata, not production load measurements. These boundaries remain visible in every coverage report.
