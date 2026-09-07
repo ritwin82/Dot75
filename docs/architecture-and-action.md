@@ -18,7 +18,7 @@ The GitHub Action is a useful addition because it makes that question part of th
 | Optional explanation | Explain an already determined verdict | Ollama in the service worker; deterministic explanations remain available without a model |
 | Action transport | Discover, invoke the CLI, retain results, verify publication provenance | `apps/action`, root `action.yml`, workflow examples |
 | Service transport | Receive signed webhooks, ingest verified Action results, and process durable jobs | `apps/api`, `apps/worker`, PostgreSQL metadata, `pg-boss` |
-| Local dashboard | View GitHub App, GitHub Action, and local validation evidence | `apps/web`; Next.js dashboard |
+| Account dashboard | View authorized GitHub App, GitHub Action, and local validation evidence | `apps/web`; Next.js dashboard |
 
 The Action publisher can import the same verified result into the service job database. The API authenticates the exact JSON bytes with HMAC-SHA-256, validates the versioned result shape, requires the repository, run, attempt, PR, and external check identity to agree, and accepts only fresh deliveries. Storage is idempotent by repository, PR, head SHA, and base SHA, so a workflow retry updates the existing dashboard entry. No SQL is rerun during synchronization.
 
@@ -93,7 +93,7 @@ The analysis job has contents/PR read permissions. The `workflow_run` publisher 
 
 When the platform runs only on a workstation or private network, set `LOCALMESH_PUBLISHER_RUNNER_JSON` to labels for a trusted self-hosted runner with network access to the API. That runner long-polls GitHub over an outbound connection, and then calls the private API locally; the API does not need an inbound public route. Keep this publisher runner separate from untrusted SQL analysis runners because it receives the ingestion secret and a write-capable GitHub token.
 
-Require the **LocalMesh Sensei** check from the GitHub Actions integration, require branches to be current, and enable its `merge_group` event if using merge queue. Do not enable the Action and GitHub App publisher under the same required-check name for the same repository; choose one delivery path. The example templates are not activated automatically in this checkout.
+Require the **LocalMesh Sensei** check from the GitHub Actions integration, require branches to be current, and enable its `merge_group` event if using merge queue. Do not enable the Action and GitHub App publisher under the same required-check name for the same repository; choose one delivery path. The reusable examples remain under `examples/github-actions`; this repository also has pinned active workflows for its own checks.
 
 A self-hosted Actions runner initiates outbound connections to GitHub, so this deployment needs no inbound webhook or public local endpoint. [GitHub self-hosted runner communication](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 

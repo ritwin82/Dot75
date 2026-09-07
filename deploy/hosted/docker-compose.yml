@@ -1,0 +1,70 @@
+services:
+  metadata:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env.hosted
+    environment:
+      POSTGRES_USER: localmesh
+      POSTGRES_DB: localmesh
+    volumes:
+      - localmesh_metadata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U localmesh"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file: .env.hosted
+    depends_on:
+      metadata:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    env_file: .env.hosted
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - localmesh_discovery:/app/.localmesh-cache
+    depends_on:
+      metadata:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    env_file: .env.hosted
+    environment:
+      API_INTERNAL_URL: http://api:4100
+    depends_on:
+      - api
+
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    env_file: .env.hosted
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  localmesh_metadata:
+  localmesh_discovery:
+  caddy_data:
+  caddy_config:

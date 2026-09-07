@@ -8,7 +8,9 @@ AI is optional. When Ollama is available it explains verified failures and propo
 
 LocalMesh now supports a thin GitHub Action as an alternative to the webhook service. It discovers other open migration PRs by immutable SHA, invokes the same validation engine through a portable JSON CLI, and publishes detailed Checks and a sticky PR comment. Default-branch pushes refresh open migration PRs without comment notifications; merge queues validate the full cumulative group. The trusted publisher can also send its verified result to the LocalMesh API so the same run appears in the dashboard without executing it again.
 
-Start with the [architecture, Action setup, reporting guide, and prioritized roadmap](docs/architecture-and-action.md). Copy the [analysis workflow](examples/github-actions/localmesh-analysis.yml) and [publication workflow](examples/github-actions/localmesh-publication.yml) into a consuming repository and configure a reviewed tool SHA. They are templates and are not enabled automatically in this checkout.
+Start with the [architecture, Action setup, reporting guide, and prioritized roadmap](docs/architecture-and-action.md). Copy the [analysis workflow](examples/github-actions/localmesh-analysis.yml) and [publication workflow](examples/github-actions/localmesh-publication.yml) into a consuming repository and configure a reviewed tool SHA. This repository also contains active pinned workflows under `.github/workflows` for its own GitHub checks.
+
+For install-once coverage across all or selected repositories, deploy the [hosted GitHub App control plane](docs/hosted-github-app.md). Users sign in with GitHub, install the App on an account or organization, and see only the installations and repository results they are authorized to access.
 
 GitHub-only operation needs no webhook server, GitHub App key, service database, or inbound port. Dashboard synchronization is optional: configure the API and publication workflow with the same ingestion secret and run the publisher where it can reach the API. The sample keeps isolated analysis and trusted publication separate. A local analysis runner must be isolated for every PR it might analyze, including other open fork PRs.
 
@@ -31,7 +33,7 @@ Every new result carries the exact tested revisions, coverage decisions, and a S
 - Validates Git-committed schema and fixture-backed data contracts.
 - Tests paired `.up.sql` and `.down.sql` files and reports unsafe or missing rollbacks.
 - Warns about blocking indexes, eager constraint validation, and likely rewrites.
-- Publishes a required `LocalMesh Sensei` Check and serves a read-only local dashboard.
+- Publishes a required `LocalMesh Sensei` Check and serves a tenant-scoped hosted or local dashboard.
 
 ## Architecture
 
@@ -73,7 +75,7 @@ The service metadata is stored in PostgreSQL and jobs are delivered through `pg-
    - Checks: write
    - Metadata: read
 
-   Subscribe to `pull_request` and `merge_group`; point the webhook to `https://YOUR_HOST/webhooks/github`.
+   Subscribe to `pull_request`, `merge_group`, `push`, and `repository`; point the webhook to `https://YOUR_HOST/webhooks/github`.
 
 4. Add `localmesh.yml` to the repository. Start from `localmesh.example.yml`.
 
@@ -114,7 +116,7 @@ The benchmark contains 20 known-conflicting and 20 known-safe pairs and reports 
 - Ambiguous dependency inspection is conservative: the pair is tested.
 - New PR commits cancel older queued or running records; job keys prevent duplicate delivery.
 - The worker stops its test container in `finally`, including error paths.
-- GitHub annotations are capped at 50; the full result remains in the local dashboard.
+- GitHub annotations are capped at 50; the full result remains in the dashboard.
 
 ## Demo pitch
 
@@ -124,4 +126,4 @@ Open two PRs that pass alone but both modify the same database contract. Show Lo
 
 ## Current boundaries
 
-The MVP supports raw PostgreSQL SQL only. It does not include LAN/VPN collaboration, a hosted control plane, SaaS tenancy, production-row ingestion, or adapters for Prisma, Flyway, Liquibase, Rails, Django, or Alembic.
+The MVP supports raw PostgreSQL SQL only. The hosted control plane supports GitHub account installations and tenant-scoped results, but it does not include billing, production-row ingestion, or adapters for Prisma, Flyway, Liquibase, Rails, Django, or Alembic.
