@@ -6,7 +6,7 @@ export default function LandingPage(){
   return <>
     <section className="landing-hero page-width" id="product">
       <div className="hero-copy">
-        <div className="kicker">Self-hosted PostgreSQL migration safety</div>
+        <div className="kicker">Continuous PostgreSQL migration safety</div>
         <h1>Two pull requests.<br/>One database.<br/><span>Zero blind merges.</span></h1>
         <p>Dot75 tests related SQL migrations together in real PostgreSQL, catches order-dependent failures, and reports the evidence where your team reviews code.</p>
         <div className="hero-actions">
@@ -60,7 +60,7 @@ export default function LandingPage(){
 
     <section className="setup-section page-width">
       <div className="section-intro"><div className="section-index">05 / Get started</div><h2>Keep the workflow in GitHub.</h2><p>Run Dot75 on your own infrastructure and connect it to the repositories you want to protect.</p></div>
-      <ol className="setup-list"><li><span>01</span><div><b>Deploy the local stack</b><p>Start the API, worker, dashboard, and metadata database with Docker Compose.</p></div></li><li><span>02</span><div><b>Install the GitHub App</b><p>Grant read access to contents and pull requests, plus write access to Checks.</p></div></li><li><span>03</span><div><b>Commit repository configuration</b><p>Point Dot75 at migrations, contracts, fixtures, and your PostgreSQL version.</p></div></li></ol>
+      <ol className="setup-list"><li><span>01</span><div><b>Connect your GitHub account</b><p>Sign in and install the LocalMesh GitHub App on all repositories or a selected set.</p></div></li><li><span>02</span><div><b>Receive automatic reviews</b><p>Pull requests and merge queues trigger isolated PostgreSQL checks through signed webhooks.</p></div></li><li><span>03</span><div><b>Review one evidence stream</b><p>GitHub Checks, sticky comments, and the hosted dashboard share the same verified result.</p></div></li></ol>
     </section>
 
     <section className="landing-cta"><div className="page-width"><div><span>Ready to inspect your installation?</span><h2>See every migration check in one place.</h2></div><a className="light-button" href="/dashboard">Open dashboard</a></div></section>

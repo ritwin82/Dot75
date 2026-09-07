@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import type { ValidationResult } from "@localmesh/shared";
 import { ResultFindings } from "../../../components/result-findings";
 import { RefreshResult } from "../../../components/refresh-result";
@@ -7,7 +8,9 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Migration check" };
 type Job = { id: string; owner: string; repo: string; pr_number: number; status: string; source?: string; result?: ValidationResult; error?: string };
 async function getJob(id: string): Promise<Job | null> {
-  const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100"}/api/jobs/${encodeURIComponent(id)}`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+  const cookieHeader = (await cookies()).toString();
+  const response = await fetch(`${process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100"}/api/jobs/${encodeURIComponent(id)}`, { headers: { cookie: cookieHeader }, cache: "no-store", signal: AbortSignal.timeout(10000) });
+  if (response.status === 401) throw new Error("AUTH_REQUIRED");
   if (response.status === 404) return null;
   if (!response.ok) throw new Error("API unavailable");
   return response.json();
@@ -16,7 +19,7 @@ async function getJob(id: string): Promise<Job | null> {
 export default async function Detail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   let job: Job | null;
-  try { job = await getJob(id); } catch { return <section className="not-found"><h1>Unable to load this check</h1><p>The validation API is unavailable. Start the API and database, then refresh this page.</p><a href="/dashboard">Back to dashboard</a></section>; }
+  try { job = await getJob(id); } catch (error) { return error instanceof Error && error.message === "AUTH_REQUIRED" ? <section className="not-found"><h1>GitHub sign-in required</h1><p>Sign in to view checks from repositories connected to your account.</p><a className="primary-button" href={`${process.env.PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100"}/auth/github`}>Continue with GitHub</a></section> : <section className="not-found"><h1>Unable to load this check</h1><p>The validation API is unavailable. Check the service deployment, then refresh this page.</p><a href="/dashboard">Back to dashboard</a></section>; }
   if (!job) return <section className="not-found"><h1>Check not found</h1><p>No validation exists at this address.</p><a href="/dashboard">Back to dashboard</a></section>;
   const r = job.result;
   const ai = r?.explanation;

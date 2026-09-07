@@ -1,24 +1,39 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { findingCategory, type ValidationResult } from "@localmesh/shared";
 import { RefreshResult } from "../../components/refresh-result";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Dashboard" };
 type Job = { id: string; owner: string; repo: string; prNumber: number; status: string; source?: string; result?: ValidationResult; createdAt: string };
+type Installation = { id: number; accountLogin: string; accountType: string; repositorySelection: string; repositoryCount: number; status: string };
+type Repository = { installationId: number; repositoryId: number; fullName: string; private: boolean };
 
 export default async function Dashboard() {
+  const api = process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
+  const publicApi = process.env.PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
+  const cookieHeader = (await cookies()).toString();
   let list: Job[];
+  let installations: Installation[] = [];
+  let repositories: Repository[] = [];
+  let installUrl: string | undefined;
   try {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100"}/api/jobs`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+    const response = await fetch(`${api}/api/jobs`, { headers: { cookie: cookieHeader }, cache: "no-store", signal: AbortSignal.timeout(10000) });
+    if (response.status === 401) return <section className="not-found"><div className="product-kicker">GitHub account connection</div><h1>Connect GitHub to LocalMesh</h1><p>Sign in, install the LocalMesh GitHub App on all or selected repositories, and migration pull requests will appear here automatically.</p><a className="primary-button" href={`${publicApi}/auth/github`}>Continue with GitHub</a></section>;
     if (!response.ok) throw new Error("API unavailable");
     list = (await response.json()).jobs;
-  } catch { return <section className="not-found"><h1>Dashboard unavailable</h1><p>The API could not be reached. Start the API and metadata database, then refresh.</p></section>; }
+    const installationResponse = await fetch(`${api}/api/installations`, { headers: { cookie: cookieHeader }, cache: "no-store", signal: AbortSignal.timeout(10000) });
+    if (installationResponse.ok) ({ installations, repositories } = await installationResponse.json());
+    const installResponse = await fetch(`${api}/api/github/install-url`, { headers: { cookie: cookieHeader }, cache: "no-store", signal: AbortSignal.timeout(10000) });
+    if (installResponse.ok) installUrl = (await installResponse.json()).url;
+  } catch { return <section className="not-found"><h1>Dashboard unavailable</h1><p>The hosted API could not be reached. Check the service deployment, then refresh.</p></section>; }
   const passed = list.filter((job) => job.status === "passed").length;
   const failed = list.filter((job) => job.status === "failed").length;
   const running = list.filter((job) => ["queued", "running"].includes(job.status)).length;
   const comparisons = list.reduce((n, job) => n + (job.result?.comparedPullRequests.length ?? 0), 0);
   return <div className="dashboard-page">
     <section className="dashboard-heading"><div className="product-kicker">Installation workspace</div><h1>Migration activity</h1><p>Open a check to see the evidence, affected PRs, contract coverage and local AI explanation.</p><RefreshResult active={running > 0 || list.some((job) => job.result?.explanationStatus === "pending")}/></section>
+    {installUrl && <section className="connection-panel" aria-labelledby="connections-heading"><div><div className="product-kicker">GitHub connections</div><h2 id="connections-heading">{installations.length ? `${repositories.length} repositories monitored` : "Install the GitHub App"}</h2><p>{installations.length ? installations.map((installation) => `${installation.accountLogin} · ${installation.repositoryCount} repositories · ${installation.repositorySelection}`).join(" | ") : "Choose all repositories or select the repositories whose migration pull requests LocalMesh should monitor."}</p>{repositories.length > 0 && <details><summary>Connected repositories</summary><p>{repositories.map((repository) => repository.fullName).join(" · ")}</p></details>}</div><a className="primary-button" href={installUrl}>{installations.length ? "Manage repositories" : "Connect repositories"}</a></section>}
     <section className="dashboard-stats" aria-label="Validation summary"><Metric value={list.length} label="Recent validation runs"/><Metric value={comparisons} label="PR pairs tested"/><Metric value={passed} label="Passing" tone="passed"/><Metric value={failed} label={`Failed · ${running} active`} tone="failed"/></section>
     <section className="checks-section" id="recent-checks"><div className="product-section-heading"><div><div className="product-kicker">Repository activity</div><h2>Recent checks</h2></div><span>{list.length} shown</span></div>
       {list.length ? <div className="check-list"><div className="table-head"><span>Repository / finding</span><span>Result / explanation</span><span>Related PRs</span><span>Created</span></div>{list.map((job) => {
