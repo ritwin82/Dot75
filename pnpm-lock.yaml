@@ -26,6 +26,9 @@ importers:
 
   apps/action:
     dependencies:
+      '@localmesh/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       '@localmesh/github':
         specifier: workspace:*
         version: link:../../packages/github
@@ -38,10 +41,6 @@ importers:
       zod:
         specifier: ^4.1.5
         version: 4.5.4
-    devDependencies:
-      '@localmesh/engine':
-        specifier: workspace:*
-        version: link:../../packages/engine
 
   apps/api:
     dependencies:

@@ -64,6 +64,19 @@ describe("privileged workflow result publication", () => {
     expect(onPublished).toHaveBeenCalledWith({ externalId: "localmesh:100:1:1", result: expect.objectContaining({ currentPr: 1 }) });
   });
 
+  it("adds an optional Ollama explanation without changing the verified verdict", async () => {
+    const { octokit } = client();
+    const explain = vi.fn().mockResolvedValue({
+      cause: "PR #1 changes the account table.", conflictingObjects: ["table:public.accounts"], forwardFix: "Coordinate the migrations.",
+      rollbackFix: "The recorded down migration restored the schema.", confidence: "high", assumptions: [], source: "ollama", model: "local-model"
+    });
+    await publishResults(octokit, context, envelope(), { explain });
+    expect(explain).toHaveBeenCalledTimes(1);
+    expect(updateCheck).toHaveBeenCalledWith(octokit, "owner", "repo", 500, expect.objectContaining({
+      status: "passed", explanationStatus: "complete", explanation: expect.objectContaining({ source: "ollama" })
+    }));
+  });
+
   it("rejects malformed artifacts and cross-repository identity before any API call", async () => {
     const { mock, octokit } = client();
     await expect(publishResults(octokit, context, { ...envelope(), runId: "100" } as unknown as ActionEnvelope)).rejects.toThrow();

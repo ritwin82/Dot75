@@ -83,6 +83,9 @@ Copy `examples/github-actions/localmesh-analysis.yml` and `localmesh-publication
 | `LOCALMESH_RUNNER_JSON` | Optional JSON runner label array; defaults to `["ubuntu-latest"]` |
 | `LOCALMESH_PUBLISHER_RUNNER_JSON` | Optional JSON runner label array for the trusted publisher; use a local runner when the API is private |
 | `LOCALMESH_PLATFORM_URL` | Optional API origin reachable from the publisher, such as `http://localmesh.internal:4100` |
+| `LOCALMESH_OLLAMA_URL` | Optional Ollama origin reachable from the trusted publisher, such as `http://127.0.0.1:11434` |
+| `LOCALMESH_OLLAMA_MODEL` | Optional installed model name; when set, the publisher adds a plain-language explanation after verification |
+| `LOCALMESH_OLLAMA_TIMEOUT_MS` | Optional local inference timeout; defaults to 120 seconds |
 | `LOCALMESH_UPLOAD_REPLAY` | Optional `true` to upload SQL/fixture replay inputs for seven days |
 
 To synchronize Action results into the dashboard, generate a high-entropy secret and set the same value as `LOCALMESH_INGESTION_SECRET` in the platform `.env` and as a GitHub Actions repository secret. Set `LOCALMESH_PLATFORM_URL` as a repository variable. Both values are required together; omitting both keeps the GitHub-only mode. The API endpoint is `POST /api/action-results`, and the publisher signs the exact request body in `x-localmesh-signature-256`.
@@ -90,6 +93,8 @@ To synchronize Action results into the dashboard, generate a high-entropy secret
 Change the example `push.branches: [main]` if the default branch has another name. The analyzer checks out only the pinned tool source. It fetches target PR SQL as data through GitHub APIs; it never checks out or installs the PR project. The tool repository must be readable with the analysis job's read-only token (or public); private cross-repository tool distribution needs a separately designed credential-free distribution mechanism for forks.
 
 The analysis job has contents/PR read permissions. The `workflow_run` publisher has contents/actions read and checks/PR write permissions and runs separately. It never executes SQL or artifact-provided code. It validates the repository, originating run and attempt, workflow path, source event, expected workflow contents, target heads, peer heads, live base, and merge-group branch before publishing to GitHub and the optional dashboard. A PR-modified analysis workflow cannot produce an accepted passing artifact. Changes to that workflow need to reach the trusted default branch before the new workflow is accepted.
+
+If the optional Ollama variables are set, inference runs only in the trusted publisher after artifact identity and freshness checks. The model receives bounded findings, per-PR operation summaries, merge-order outcomes, compatibility relationships, and rollback evidence. It can improve the explanation, but it cannot modify the database verdict. Missing, slow, or invalid model output falls back to deterministic guidance.
 
 When the platform runs only on a workstation or private network, set `LOCALMESH_PUBLISHER_RUNNER_JSON` to labels for a trusted self-hosted runner with network access to the API. That runner long-polls GitHub over an outbound connection, and then calls the private API locally; the API does not need an inbound public route. Keep this publisher runner separate from untrusted SQL analysis runners because it receives the ingestion secret and a write-capable GitHub token.
 

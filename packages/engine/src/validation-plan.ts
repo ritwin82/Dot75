@@ -2,6 +2,7 @@ import { runDataContracts, validateSchemaContracts, type ContractMappings } from
 import { analyzePerformance } from "./performance.js";
 import { areRelated } from "./relations.js";
 import { PostgresValidationEnvironment } from "./runtime.js";
+import { summarizePullRequestChange } from "./migration-summary.js";
 import { deriveCompatibilityRelationships, uniqueFindings, type DataStateDifference, type DataStateSnapshot, type Finding, type MigrationFile, type OperationalMetadata, type OrderResult, type ValidationJob, type ValidationResult } from "@localmesh/shared";
 
 export interface MigrationGroup { pr: number; files: MigrationFile[] }
@@ -116,7 +117,14 @@ export async function runValidationPlan(environment: PostgresValidationEnvironme
     jobId: job.id, repository: `${job.owner}/${job.repo}`, currentPr: job.prNumber, baseSha: job.baseSha, headSha: job.headSha,
     status: failure ? "failed" : "passed", startedAt, completedAt: new Date().toISOString(),
     affectedObjects: [...affected.values()], dependencies: current.snapshot?.edges ?? [], comparedPullRequests: compared,
-    orders: orders.map(({ snapshot: _snapshot, affectedObjects: _affected, ...order }) => order), contracts, rollbacks, dataDifferences,
+    orders: orders.map(({ snapshot: _snapshot, ...order }) => order), contracts, rollbacks, dataDifferences,
+    pullRequestChanges: [
+      summarizePullRequestChange(plan.current.pr, plan.current.files, current.affectedObjects ?? []),
+      ...plan.candidates.filter((candidate) => compared.includes(candidate.pr)).map((candidate) => {
+        const standalone = orders.find((order) => order.order.length === 1 && order.order[0] === candidate.pr);
+        return summarizePullRequestChange(candidate.pr, candidate.files, standalone?.affectedObjects ?? []);
+      })
+    ],
     performance: analyzePerformance(plan.current.files, plan.metadata ?? []),
     groupCoverage:{tested:testedGroups,untested:untestedGroups,permutationBudget:maxGroupPermutations},
     scope: { candidatePrs: plan.candidates.map((candidate) => candidate.pr), skippedPrs: skipped, contractMappings: enabledMappings, fixtureFiles: plan.fixtures.length, rollbackChecked: plan.verifyRollback && !!current.sqlPassed, decisions }

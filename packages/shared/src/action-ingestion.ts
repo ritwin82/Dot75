@@ -52,6 +52,18 @@ export const ingestedValidationResultSchema = z.object({
     findings: z.array(finding).max(5_000)
   })).max(5_000),
   performance: z.array(finding).max(5_000),
+  pullRequestChanges: z.array(z.object({
+    pr: prNumber,
+    migrationFiles: z.array(z.string().min(1).max(4096)).max(5_000),
+    operations: z.array(z.object({
+      file: z.string().min(1).max(4096),
+      action: z.enum(["create", "alter", "add", "drop", "rename", "insert", "update", "delete", "execute"]),
+      objectKind: z.enum(["table", "column", "index", "constraint", "type", "view", "function", "data", "statement"]),
+      objectName: boundedText,
+      description: boundedText
+    })).max(100),
+    affectedObjects: z.array(z.object({ id: boundedText, kind: z.enum(["table", "partition", "column", "constraint", "index", "view", "materialized_view", "sequence", "domain", "composite", "function", "procedure", "trigger", "policy", "collation", "extension", "enum", "publication"]) })).max(20_000)
+  })).max(2_000).optional(),
   provenance: z.object({
     pullRequests: z.array(z.object({ number: prNumber, author: boundedText, headSha: sha, title: boundedText.optional() })).max(2_000),
     currentPrFiles: z.array(z.string().min(1).max(4096)).max(5_000),

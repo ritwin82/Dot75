@@ -3,7 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { Octokit } from "@octokit/rest";
 import { createDiskDiscoveryCache, checkSummary } from "@localmesh/github";
-import type { PublishedActionResult, ValidationJob, ValidationResult } from "@localmesh/shared";
+import { explainWithOllama } from "@localmesh/engine";
+import { uniqueFindings, type PublishedActionResult, type ValidationJob, type ValidationResult } from "@localmesh/shared";
 import { eventTarget, prepareRun } from "./discover.js";
 import { publishResults } from "./publish.js";
 import { sendPlatformResults } from "./platform.js";
@@ -39,8 +40,19 @@ async function main(): Promise<void> {
     if (process.env.GITHUB_EVENT_NAME !== "workflow_run" || !event.workflow_run || !event.repository) throw new Error("Publication requires a workflow_run event.");
     const envelope = await readJson(required(argument("--results"), "--results")).catch(() => undefined);
     const publishedResults: PublishedActionResult[] = [];
+    const ollamaModel = process.env.OLLAMA_MODEL?.trim();
     await publishResults(octokit, { owner: event.repository.owner.login, repo: event.repository.name, runId: event.workflow_run.id, runAttempt: event.workflow_run.run_attempt, workflowPath: ".github/workflows/localmesh-analysis.yml" }, envelope, {
-      onPublished: (published) => { publishedResults.push(published); }
+      onPublished: (published) => { publishedResults.push(published); },
+      ...(ollamaModel ? { explain: async (result: ValidationResult) => explainWithOllama(uniqueFindings([
+        ...result.orders.flatMap((order) => order.findings), ...result.contracts, ...result.rollbacks.flatMap((rollback) => rollback.findings), ...result.performance
+      ]), JSON.stringify({
+        pullRequests: result.provenance?.pullRequests,
+        changes: result.pullRequestChanges,
+        executionOrders: result.orders.map(({ order, passed, sqlPassed }) => ({ order, passed, sqlPassed })),
+        compatibility: result.compatibility,
+        rollbackResults: result.rollbacks,
+        dataDifferences: result.dataDifferences
+      }), { url: process.env.OLLAMA_URL ?? "http://127.0.0.1:11434", model: ollamaModel, timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? 120000) }) } : {})
     });
     const platformUrl = process.env.LOCALMESH_PLATFORM_URL?.trim();
     const ingestionSecret = process.env.LOCALMESH_INGESTION_SECRET?.trim();

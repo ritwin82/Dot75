@@ -112,6 +112,21 @@ export interface RollbackResult {
   findings: Finding[];
 }
 
+export interface MigrationOperationSummary {
+  file: string;
+  action: "create" | "alter" | "add" | "drop" | "rename" | "insert" | "update" | "delete" | "execute";
+  objectKind: "table" | "column" | "index" | "constraint" | "type" | "view" | "function" | "data" | "statement";
+  objectName: string;
+  description: string;
+}
+
+export interface PullRequestChangeSummary {
+  pr: number;
+  migrationFiles: string[];
+  operations: MigrationOperationSummary[];
+  affectedObjects: Array<{ id: string; kind: ObjectKind }>;
+}
+
 export interface ValidationResult {
   jobId: string;
   status: CheckStatus;
@@ -128,6 +143,7 @@ export interface ValidationResult {
   contracts: Finding[];
   rollbacks: RollbackResult[];
   performance: Finding[];
+  pullRequestChanges?: PullRequestChangeSummary[];
   dataDifferences?: DataStateDifference[];
   groupCoverage?: { tested: number[][]; untested: number[][]; permutationBudget: number };
   compatibility?: CompatibilityRelationship[];

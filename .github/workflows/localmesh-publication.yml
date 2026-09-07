@@ -48,4 +48,7 @@ jobs:
           RESULTS: ${{ runner.temp }}\localmesh-publication\localmesh-results.json
           LOCALMESH_PLATFORM_URL: http://127.0.0.1:4100
           LOCALMESH_INGESTION_SECRET: ${{ secrets.LOCALMESH_INGESTION_SECRET }}
+          OLLAMA_URL: http://127.0.0.1:11434
+          OLLAMA_MODEL: qwen2.5-coder:3b
+          OLLAMA_TIMEOUT_MS: '120000'
         run: node localmesh-tool/apps/action/dist/index.js publish --results "$env:RESULTS"

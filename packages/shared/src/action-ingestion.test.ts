@@ -11,7 +11,9 @@ const payload = {
     result: {
       jobId: "job-17", repository: "acme/store", currentPr: 17, headSha: sha, baseSha: sha, status: "passed" as const,
       startedAt: "2026-09-07T09:59:00.000Z", completedAt: "2026-09-07T10:00:00.000Z", affectedObjects: [], dependencies: [],
-      comparedPullRequests: [], orders: [{ order: [17], passed: true, findings: [], durationMs: 10 }], contracts: [], rollbacks: [], performance: []
+      comparedPullRequests: [], orders: [{ order: [17], passed: true, findings: [], durationMs: 10 }], contracts: [], rollbacks: [], performance: [],
+      pullRequestChanges: [{ pr: 17, migrationFiles: ["db/migrations/002_status.up.sql"], affectedObjects: [{ id: "column:public.orders.status", kind: "column" as const }],
+        operations: [{ file: "db/migrations/002_status.up.sql", action: "add" as const, objectKind: "column" as const, objectName: "public.orders.status", description: "Adds column status to public.orders." }] }]
     }
   }]
 };
@@ -26,6 +28,7 @@ describe("Action result ingestion contract", () => {
 
   it("accepts a complete result and rejects mismatched transport shapes", () => {
     expect(parseActionIngestionPayload(payload).results[0]?.result.currentPr).toBe(17);
+    expect(parseActionIngestionPayload(payload).results[0]?.result.pullRequestChanges?.[0]?.operations[0]?.action).toBe("add");
     expect(() => parseActionIngestionPayload({ ...payload, repository: "invalid" })).toThrow();
     expect(() => parseActionIngestionPayload({ ...payload, results: [] })).toThrow();
   });

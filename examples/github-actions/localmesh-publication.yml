@@ -57,4 +57,7 @@ jobs:
           RESULTS: ${{ runner.temp }}/localmesh-publication/localmesh-results.json
           LOCALMESH_PLATFORM_URL: ${{ vars.LOCALMESH_PLATFORM_URL }}
           LOCALMESH_INGESTION_SECRET: ${{ secrets.LOCALMESH_INGESTION_SECRET }}
+          OLLAMA_URL: ${{ vars.LOCALMESH_OLLAMA_URL }}
+          OLLAMA_MODEL: ${{ vars.LOCALMESH_OLLAMA_MODEL }}
+          OLLAMA_TIMEOUT_MS: ${{ vars.LOCALMESH_OLLAMA_TIMEOUT_MS }}
         run: node localmesh-tool/apps/action/dist/index.js publish --results "$RESULTS"
