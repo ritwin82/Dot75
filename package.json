@@ -3,16 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.15.1",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "pnpm -r build",
+    "start": "concurrently -n api,worker,web \"node --env-file-if-exists=.env apps/api/dist/index.js\" \"node --env-file-if-exists=.env apps/worker/dist/index.js\" \"pnpm --filter @localmesh/web start\"",
     "dev": "concurrently -n api,worker,web -c blue,magenta,green \"pnpm --filter @localmesh/api dev\" \"pnpm --filter @localmesh/worker dev\" \"pnpm --filter @localmesh/web dev\"",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "test:unit": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "benchmark": "tsx benchmarks/run.ts",
-    "typecheck": "pnpm -r typecheck"
+    "demo:conflicts": "pnpm --filter @localmesh/worker demo",
+    "typecheck": "pnpm -r typecheck",
+    "localmesh": "tsx apps/worker/src/validate-cli.ts"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

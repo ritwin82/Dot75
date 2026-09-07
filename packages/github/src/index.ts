@@ -1,7 +1,11 @@
 import {createHmac,timingSafeEqual} from "node:crypto";
 import {App} from "@octokit/app";
 import {Octokit} from "@octokit/rest";
-import type {Finding,MigrationFile,OrderResult,ValidationResult} from "@localmesh/shared";
+import type {MigrationFile,ValidationResult} from "@localmesh/shared";
+import {checkAnnotations,checkConclusion,checkSummary,checkTitle} from "./reporting.js";
+import {migrationDirectoryPrefix} from "./discovery.js";
+export * from "./reporting.js";
+export * from "./discovery.js";
 
 export function verifyWebhookSignature(raw:Buffer,signature:string|undefined,secret:string):boolean {
   if(!signature?.startsWith("sha256=")) return false;
@@ -25,11 +29,8 @@ export async function createCheck(octokit:Octokit,owner:string,repo:string,headS
 }
 
 export async function updateCheck(octokit:Octokit,owner:string,repo:string,checkRunId:number,result:ValidationResult):Promise<void> {
-  const errors=allFindings(result).filter((f)=>f.severity==="error");
-  const warnings=allFindings(result).filter((f)=>f.severity==="warning");
-  const conclusion=result.status==="cancelled"?"cancelled":errors.length?"failure":"success";
-  await octokit.checks.update({owner,repo,check_run_id:checkRunId,status:"completed",conclusion,
-    output:{title:errors.length?`${errors.length} migration problem(s) detected`:"Migrations are compatible",summary:checkSummary(result,errors,warnings),annotations:[...errors,...warnings].slice(0,50).filter((f)=>f.file).map((f)=>({path:f.file!,start_line:f.line??1,end_line:f.line??1,annotation_level:f.severity==="error"?"failure":"warning",message:f.message,title:f.title}))}});
+  await octokit.checks.update({owner,repo,check_run_id:checkRunId,status:"completed",conclusion:checkConclusion(result),
+    output:{title:checkTitle(result),summary:checkSummary(result),annotations:checkAnnotations(result)}});
 }
 
 export async function markCheckRunning(octokit:Octokit,owner:string,repo:string,id:number):Promise<void> {
@@ -42,28 +43,26 @@ export async function markCheckInfrastructureFailure(octokit:Octokit,owner:strin
 
 export async function cancelCheck(octokit:Octokit,owner:string,repo:string,id:number):Promise<void>{await octokit.checks.update({owner,repo,check_run_id:id,status:"completed",conclusion:"cancelled",output:{title:"Superseded by a newer commit",summary:"This validation was cancelled because the pull request head changed."}});}
 
-function allFindings(result:ValidationResult):Finding[]{return [...result.orders.flatMap((o)=>o.findings),...result.contracts,...result.rollbacks.flatMap((r)=>r.findings),...result.performance];}
-function orderLine(order:OrderResult):string {return `- PR order ${order.order.map((n)=>`#${n}`).join(" → ")}: **${order.passed?"passed":"failed"}** (${order.durationMs} ms)`;}
-export function checkSummary(result:ValidationResult,errors=allFindings(result).filter((f)=>f.severity==="error"),warnings=allFindings(result).filter((f)=>f.severity==="warning")):string {
-  return [`Compared PR #${result.currentPr} with ${result.comparedPullRequests.length} related open pull request(s).`,``,...result.orders.map(orderLine),``,`**${errors.length} errors · ${warnings.length} warnings**`,``,...errors.slice(0,10).map((f)=>`- **${f.title}:** ${f.message}`),``,`Reproduce locally: \`pnpm --filter @localmesh/worker validate --job ${result.jobId}\``].join("\n").slice(0,65000);
-}
-
 export async function getTextFile(octokit:Octokit,owner:string,repo:string,path:string,ref:string):Promise<string|undefined>{
-  try {const {data}=await octokit.repos.getContent({owner,repo,path,ref}); if(Array.isArray(data)||data.type!=="file"||!("content" in data)) return undefined; return Buffer.from(data.content,"base64").toString("utf8");} catch(error){if((error as {status?:number}).status===404)return undefined;throw error;}
+  try {const {data}=await octokit.repos.getContent({owner,repo,path,ref}); if(Array.isArray(data)||data.type!=="file"||!("content" in data)) return undefined; if(data.encoding!=="base64")throw new Error(`GitHub did not return the complete contents of ${path} at ${ref}.`); const decoded=Buffer.from(data.content,"base64");if(decoded.length!==data.size)throw new Error(`GitHub returned incomplete contents for ${path} at ${ref}.`);return decoded.toString("utf8");} catch(error){if((error as {status?:number}).status===404)return undefined;throw error;}
 }
 
 export async function listMigrations(octokit:Octokit,owner:string,repo:string,ref:string,directory:string):Promise<MigrationFile[]> {
   const {data}=await octokit.git.getTree({owner,repo,tree_sha:ref,recursive:"true"});
-  const paths=data.tree.filter((e)=>e.type==="blob"&&e.path?.startsWith(`${directory.replace(/\/$/,"")}/`)&&e.path.endsWith(".sql")).map((e)=>e.path!);
+  if(data.truncated)throw new Error(`GitHub truncated the migration tree at ${ref}; validation cannot use an incomplete baseline.`);
+  const prefix=migrationDirectoryPrefix(directory);
+  const paths=data.tree.filter((e)=>e.type==="blob"&&e.path?.startsWith(prefix)&&e.path.endsWith(".sql")).map((e)=>e.path!);
   const files:MigrationFile[]=[];
-  for(const path of paths){const direction=path.endsWith(".down.sql")?"down":path.endsWith(".up.sql")?"up":undefined;if(!direction)continue;const sql=await getTextFile(octokit,owner,repo,path,ref);if(sql!==undefined)files.push({path,sql,direction,order:migrationOrder(path)});}
+  for(const path of paths){const direction=path.endsWith(".down.sql")?"down":path.endsWith(".up.sql")?"up":undefined;if(!direction)throw new Error(`Unsupported baseline migration ${path}; expected .up.sql or .down.sql.`);const sql=await getTextFile(octokit,owner,repo,path,ref);if(sql===undefined)throw new Error(`Could not read baseline migration ${path} at ${ref}.`);files.push({path,sql,direction,order:migrationOrder(path)});}
   return files.sort((a,b)=>a.order-b.order||a.path.localeCompare(b.path));
 }
 
 export async function listSqlFiles(octokit:Octokit,owner:string,repo:string,ref:string,directory:string):Promise<Array<{path:string;sql:string}>> {
   const {data}=await octokit.git.getTree({owner,repo,tree_sha:ref,recursive:"true"}); const result:Array<{path:string;sql:string}>=[];
-  const paths=data.tree.filter((e)=>e.type==="blob"&&e.path?.startsWith(`${directory.replace(/\/$/,"")}/`)&&e.path.endsWith(".sql")).map((e)=>e.path!);
-  for(const path of paths){const sql=await getTextFile(octokit,owner,repo,path,ref);if(sql!==undefined)result.push({path,sql});}
+  if(data.truncated)throw new Error(`GitHub truncated the SQL file tree at ${ref}; validation cannot use incomplete fixtures.`);
+  const prefix=migrationDirectoryPrefix(directory);
+  const paths=data.tree.filter((e)=>e.type==="blob"&&e.path?.startsWith(prefix)&&e.path.endsWith(".sql")).map((e)=>e.path!);
+  for(const path of paths){const sql=await getTextFile(octokit,owner,repo,path,ref);if(sql===undefined)throw new Error(`Could not read SQL file ${path} at ${ref}.`);result.push({path,sql});}
   return result.sort((a,b)=>a.path.localeCompare(b.path));
 }
 

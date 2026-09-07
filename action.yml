@@ -1,0 +1,26 @@
+name: LocalMesh Sensei
+description: Discover immutable migration PR snapshots and invoke the LocalMesh CLI.
+inputs:
+  token:
+    description: Read-only GitHub token for repository and pull-request discovery.
+    required: true
+  output-directory:
+    description: Directory for result envelopes and offline JSON replay inputs.
+    required: true
+  cache-directory:
+    description: Trusted local directory for immutable SHA discovery cache.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        TOOL_ROOT: ${{ github.action_path }}
+        OUTPUT_DIRECTORY: ${{ inputs.output-directory }}
+        CACHE_DIRECTORY: ${{ inputs.cache-directory }}
+      run: >-
+        node "$TOOL_ROOT/apps/action/dist/index.js" analyze
+        --cli "$TOOL_ROOT/apps/worker/dist/validate-cli.js"
+        --output-directory "$OUTPUT_DIRECTORY"
+        --cache-directory "$CACHE_DIRECTORY"

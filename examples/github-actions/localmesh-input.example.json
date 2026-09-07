@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "job": {
+    "id": "example-duplicate-column",
+    "installationId": 0,
+    "owner": "example",
+    "repo": "store",
+    "prNumber": 41,
+    "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "config": {
+    "version": 1,
+    "postgres": {
+      "version": "16",
+      "extensions": []
+    },
+    "migrations": {
+      "directory": "db/migrations",
+      "up_pattern": "*.up.sql",
+      "down_pattern": "*.down.sql"
+    },
+    "contracts": {
+      "mappings_file": ".localmesh/contracts.yml",
+      "fixtures_directory": ".localmesh/fixtures"
+    },
+    "checks": {
+      "compare_open_pull_requests": true,
+      "verify_rollback": true,
+      "require_data_contracts": false
+    },
+    "performance": {
+      "metadata_file": ".localmesh/metadata.json"
+    }
+  },
+  "baseline": [
+    {
+      "path": "db/migrations/001_orders.up.sql",
+      "sql": "CREATE TABLE orders (id bigint PRIMARY KEY);",
+      "direction": "up",
+      "order": 1
+    }
+  ],
+  "current": {
+    "pr": 41,
+    "files": [
+      {
+        "path": "db/migrations/002_discount.up.sql",
+        "sql": "ALTER TABLE orders ADD COLUMN discount numeric(10,2);",
+        "direction": "up",
+        "order": 2
+      },
+      {
+        "path": "db/migrations/002_discount.down.sql",
+        "sql": "ALTER TABLE orders DROP COLUMN discount;",
+        "direction": "down",
+        "order": 2
+      }
+    ]
+  },
+  "candidates": [
+    {
+      "pr": 52,
+      "files": [
+        {
+          "path": "db/migrations/003_discount.up.sql",
+          "sql": "ALTER TABLE orders ADD COLUMN discount integer;",
+          "direction": "up",
+          "order": 3
+        }
+      ]
+    }
+  ],
+  "fixtures": [
+    {
+      "path": ".localmesh/fixtures/orders.sql",
+      "sql": "INSERT INTO orders (id) VALUES (1);"
+    }
+  ],
+  "provenance": {
+    "trigger": "offline_example",
+    "currentPrFiles": [
+      "db/migrations/002_discount.up.sql",
+      "db/migrations/002_discount.down.sql"
+    ],
+    "pullRequests": [
+      {
+        "number": 41,
+        "author": "alice",
+        "title": "Add monetary discount",
+        "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      {
+        "number": 52,
+        "author": "bob",
+        "title": "Add percentage discount",
+        "headSha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    ]
+  }
+}

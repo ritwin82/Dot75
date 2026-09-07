@@ -5,6 +5,7 @@ import {PgBoss} from "pg-boss";
 import {cancelStaleJobs,ensureSchema,getJob,listJobs,saveJob,setCheckRunId} from "@localmesh/db";
 import {cancelCheck,createCheck,installationClient,verifyWebhookSignature} from "@localmesh/github";
 import type {ValidationJob} from "@localmesh/shared";
+import {extractPullRequest,resolveValidationBase} from "./webhook.js";
 
 const server=Fastify({logger:true,bodyLimit:2_000_000});
 await server.register(cors,{origin:process.env.WEB_ORIGIN??"http://localhost:3000"});
@@ -24,10 +25,11 @@ server.post("/webhooks/github",async(request,reply)=>{
   const event=request.headers["x-github-event"] as string|undefined;
   const payload=JSON.parse(raw.toString("utf8")) as Record<string,any>;
   if(event==="ping")return reply.send({ok:true});
-  const input=extractPullRequest(event,payload); if(!input)return reply.code(202).send({ignored:true,event});
+  const extracted=extractPullRequest(event,payload); if(!extracted)return reply.code(202).send({ignored:true,event});
   const installationId=Number(payload.installation?.id); if(!installationId)return reply.code(422).send({error:"Missing installation id"});
   const client=await installationClient(installationId);
-  const stale=await cancelStaleJobs(input.owner,input.repo,input.prNumber,input.headSha);
+  const input=await resolveValidationBase(client,extracted,event,payload);
+  const stale=input.prNumber===0?[]:await cancelStaleJobs(input.owner,input.repo,input.prNumber,input.headSha);
   await Promise.all(stale.flatMap((old)=>old.checkRunId?[cancelCheck(client,input.owner,input.repo,old.checkRunId)]:[]));
   const job:ValidationJob={id:randomUUID(),installationId,...input};
   const created=await saveJob(job);if(!created)return reply.code(202).send({accepted:false,reason:"An identical validation is already queued or complete"});
@@ -35,12 +37,6 @@ server.post("/webhooks/github",async(request,reply)=>{
   await boss.send("validate-pr",job,{singletonKey:`${input.owner}/${input.repo}#${input.prNumber}:${input.headSha}:${input.baseSha}`});
   return reply.code(202).send({accepted:true,jobId:job.id,checkRunId});
 });
-
-function extractPullRequest(event:string|undefined,payload:Record<string,any>):Omit<ValidationJob,"id"|"installationId"|"checkRunId">|null {
-  if(event==="pull_request"&&["opened","synchronize","reopened","ready_for_review"].includes(String(payload.action))){const pr=payload.pull_request;return {owner:String(payload.repository.owner.login),repo:String(payload.repository.name),prNumber:Number(pr.number),headSha:String(pr.head.sha),baseSha:String(pr.base.sha)};}
-  if(event==="merge_group"&&payload.action==="checks_requested"){const group=payload.merge_group;const match=String(group.head_ref??"").match(/\/pr-(\d+)-/);if(match)return {owner:String(payload.repository.owner.login),repo:String(payload.repository.name),prNumber:Number(match[1]),headSha:String(group.head_sha),baseSha:String(group.base_sha)};}
-  return null;
-}
 
 const port=Number(process.env.API_PORT??4100);await server.listen({host:"0.0.0.0",port});
 async function shutdown(){await server.close();await boss.stop();process.exit(0);}process.on("SIGINT",shutdown);process.on("SIGTERM",shutdown);
