@@ -6,11 +6,30 @@ import type { Finding, SchemaObject } from "@localmesh/shared";
 const templateNames = ["users","orders","payments","inventory","soft-deletion","multi-tenancy"] as const;
 export type TemplateName = typeof templateNames[number];
 
-const mappingSchema = z.object({
-  version:z.literal(1),
-  mappings:z.array(z.object({ template:z.enum(templateNames), bindings:z.record(z.string(),z.string().min(1)), enabled:z.boolean().default(true) }))
+const identifier = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,99}$/);
+const schemaAssertion = z.object({
+  id: identifier, name: z.string().min(1).max(200), object: z.string().min(1).max(500), exists: z.boolean().default(true),
+  definition_contains: z.string().min(1).max(1000).optional(), severity: z.enum(["warning", "error"]).default("error"),
+  owner: z.string().max(200).optional(), tags: z.array(identifier).max(20).default([])
 });
-export type ContractMappings=z.infer<typeof mappingSchema>;
+const sqlAssertion = z.object({
+  id: identifier, name: z.string().min(1).max(200), sql: z.string().min(1).max(100_000)
+    .refine((sql) => /^(?:SELECT|WITH)\b/i.test(sql.trim()) && !sql.trim().replace(/;$/, "").includes(";"), "Custom contracts must contain one read-only SELECT or WITH query"),
+  expect: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("zero_rows") }),
+    z.object({ type: z.literal("scalar"), equals: z.union([z.string(), z.number(), z.boolean(), z.null()]) }),
+    z.object({ type: z.literal("row_count"), max: z.number().int().nonnegative() })
+  ]),
+  severity: z.enum(["warning", "error"]).default("error"), timeout_ms: z.number().int().min(100).max(30_000).default(5000),
+  owner: z.string().max(200).optional(), tags: z.array(identifier).max(20).default([])
+});
+const mappingSchema = z.object({
+  version:z.union([z.literal(1),z.literal(2)]),
+  mappings:z.array(z.object({ template:z.enum(templateNames), bindings:z.record(z.string(),z.string().min(1)), enabled:z.boolean().default(true) })).default([]),
+  schema_assertions:z.array(schemaAssertion).max(200).default([]),
+  sql_assertions:z.array(sqlAssertion).max(200).default([])
+});
+export type ContractMappings=z.input<typeof mappingSchema>;
 export const parseMappings=(source:string):ContractMappings=>mappingSchema.parse(yaml.load(source));
 
 interface Template { required:string[]; dataCheck?:(b:Record<string,string>)=>string }
@@ -29,7 +48,7 @@ function splitTable(value:string):[string,string] { const parts=value.split(".")
 
 export function validateSchemaContracts(objects:SchemaObject[],config:ContractMappings):Finding[] {
   const findings:Finding[]=[]; const ids=new Set(objects.map((o)=>o.id));
-  for(const mapping of config.mappings.filter((m)=>m.enabled)) {
+  for(const mapping of (config.mappings ?? []).filter((m)=>m.enabled !== false)) {
     const template=templates[mapping.template];
     for(const key of template.required) if(!mapping.bindings[key]) findings.push({code:"CONTRACT_BINDING_MISSING",severity:"error",title:"Contract mapping is incomplete",message:`${mapping.template} requires a ${key} binding.`,evidence:{template:mapping.template,binding:key}});
     const table=mapping.bindings.table; if(!table) continue; const [schema,relation]=splitTable(table);
@@ -44,15 +63,38 @@ export function validateSchemaContracts(objects:SchemaObject[],config:ContractMa
       if(!hasPolicy) findings.push({code:"RLS_POLICY_MISSING",severity:"error",title:"Tenant isolation policy is missing",message:`${schema}.${relation} has no row-level security policy.`,evidence:{objects:[`table:${schema}.${relation}`]}});
     }
   }
+  const byId=new Map(objects.map((object)=>[object.id,object]));
+  for(const assertion of config.schema_assertions ?? []) {
+    const object=byId.get(assertion.object); const exists=Boolean(object);
+    const definitionMatches=!assertion.definition_contains||object?.definition.includes(assertion.definition_contains);
+    if(exists!==assertion.exists||assertion.exists&&!definitionMatches) findings.push({
+      code:"CUSTOM_SCHEMA_CONTRACT_FAILED",severity:assertion.severity??"error",title:assertion.name,
+      message:!assertion.exists&&exists?`${assertion.object} must not exist.`:!exists?`${assertion.object} is required.`:`${assertion.object} does not contain the required definition.`,
+      evidence:{contract:assertion.id,owner:assertion.owner,tags:assertion.tags,objects:[assertion.object]}
+    });
+  }
   return findings;
 }
 
 export async function runDataContracts(pool:Pool,config:ContractMappings):Promise<Finding[]> {
   const findings:Finding[]=[];
-  for(const mapping of config.mappings.filter((m)=>m.enabled)) {
+  for(const mapping of (config.mappings ?? []).filter((m)=>m.enabled !== false)) {
     const sql=templates[mapping.template].dataCheck?.(mapping.bindings); if(!sql) continue;
     try { const {rows}=await pool.query<{failures:number}>(sql); if((rows[0]?.failures??0)>0) findings.push({code:"DATA_CONTRACT_FAILED",severity:"error",title:"Fixture data violates a contract",message:`${mapping.template} found ${rows[0]!.failures} invalid row(s).`,evidence:{template:mapping.template,failures:rows[0]!.failures,objects:[`table:${mapping.bindings.table}`],rule:mapping.template==="inventory"?"Quantity must be non-negative":"Payment amount must be non-negative and currency must be present"}}); }
     catch(error) { findings.push({code:"DATA_CONTRACT_ERROR",severity:"error",title:"Data contract could not run",message:error instanceof Error?error.message:String(error),evidence:{template:mapping.template}}); }
+  }
+  for(const assertion of config.sql_assertions ?? []) {
+    const client=await pool.connect();
+    try {
+      await client.query("BEGIN READ ONLY"); await client.query(`SET LOCAL statement_timeout = ${assertion.timeout_ms??5000}`);
+      const result=await client.query<Record<string,unknown>>(assertion.sql); const first=result.rows[0]; const scalar=first?Object.values(first)[0]:undefined;
+      const passed=assertion.expect.type==="zero_rows"?result.rowCount===0:assertion.expect.type==="row_count"?(result.rowCount??0)<=assertion.expect.max:Object.is(scalar,assertion.expect.equals);
+      if(!passed)findings.push({code:"CUSTOM_DATA_CONTRACT_FAILED",severity:assertion.severity??"error",title:assertion.name,message:`Custom contract ${assertion.id} did not meet its expected result.`,evidence:{contract:assertion.id,owner:assertion.owner,tags:assertion.tags,rowCount:result.rowCount,expected:assertion.expect}});
+      await client.query("ROLLBACK");
+    } catch(error) {
+      try{await client.query("ROLLBACK");}catch{/* preserve the contract error */}
+      findings.push({code:"CUSTOM_DATA_CONTRACT_ERROR",severity:assertion.severity??"error",title:assertion.name,message:error instanceof Error?error.message:String(error),evidence:{contract:assertion.id,owner:assertion.owner,tags:assertion.tags}});
+    } finally {client.release();}
   }
   return findings;
 }

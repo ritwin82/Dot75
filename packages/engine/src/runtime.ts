@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { Pool } from "pg";
 import { diffObjects, inspectSchema } from "@localmesh/inspector";
-import type { Finding, MigrationFile, OrderResult, RollbackResult, SchemaSnapshot } from "@localmesh/shared";
+import type { DataStateSnapshot, Finding, MigrationFile, OrderResult, RollbackResult, SchemaSnapshot } from "@localmesh/shared";
 import { destructiveStatements } from "./performance.js";
 
 const safeIdentifier = (value: string) => `"${value.replaceAll('"','""')}"`;
@@ -11,8 +11,12 @@ export class PostgresValidationEnvironment {
   private constructor(private readonly container: StartedTestContainer, private readonly adminUrl: string) {}
 
   static async start(version: string): Promise<PostgresValidationEnvironment> {
+    const memory=Math.min(Math.max(Number(process.env.LOCALMESH_CONTAINER_MEMORY_MB??512),512),4096)*1024*1024;
+    const cpu=Math.min(Math.max(Number(process.env.LOCALMESH_CONTAINER_CPUS??1),0.25),8);
     const container = await new GenericContainer(`postgres:${version}-alpine`)
       .withEnvironment({ POSTGRES_PASSWORD:"localmesh", POSTGRES_USER:"localmesh", POSTGRES_DB:"postgres" })
+      .withResourcesQuota({memory,cpu})
+      .withTmpFs({"/var/lib/postgresql/data":"rw,nosuid,nodev,size=384m","/tmp":"rw,nosuid,nodev,noexec,size=64m"})
       .withExposedPorts(5432)
       .withHealthCheck({ test:["CMD-SHELL","pg_isready -U localmesh"], interval:1000, timeout:3000, retries:30 })
       .start();
@@ -28,10 +32,12 @@ export class PostgresValidationEnvironment {
 
   private async database(files: MigrationFile[], extensions: string[]): Promise<{ pool:Pool; before:SchemaSnapshot }> {
     const name = `lm_${randomUUID().replaceAll("-","")}`;
+    const password=randomUUID().replaceAll("-","");
     const admin = new Pool({ connectionString:this.adminUrl });
-    await admin.query(`CREATE DATABASE ${safeIdentifier(name)}`);
-    await admin.end();
-    const pool = new Pool({ connectionString:this.adminUrl.replace(/\/postgres$/,`/${name}`) });
+    try{await admin.query(`CREATE ROLE ${safeIdentifier(name)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '${password}'`);await admin.query(`CREATE DATABASE ${safeIdentifier(name)} OWNER ${safeIdentifier(name)}`);}finally{await admin.end();}
+    const databaseUrl=new URL(this.adminUrl);databaseUrl.username=name;databaseUrl.password=password;databaseUrl.pathname=`/${name}`;
+    const timeout=Math.min(Math.max(Number(process.env.LOCALMESH_STATEMENT_TIMEOUT_MS??30_000),100),300_000);
+    const pool = new Pool({ connectionString:databaseUrl.toString(),max:4,connectionTimeoutMillis:10_000,statement_timeout:timeout,query_timeout:timeout+1000 });
     try {
     for (const extension of extensions) await pool.query(`CREATE EXTENSION IF NOT EXISTS ${safeIdentifier(extension)}`);
     for (const file of files.filter((f) => f.direction === "up").sort((a,b) => a.order-b.order || a.path.localeCompare(b.path))) await pool.query(file.sql);
@@ -52,7 +58,7 @@ export class PostgresValidationEnvironment {
     } finally { await pool.end(); }
   }
 
-  async executeOrder(baseline:MigrationFile[], groups:{pr:number;files:MigrationFile[]}[], extensions:string[], options: { fixtures?: string[]; verify?: (pool: Pool, snapshot: SchemaSnapshot) => Promise<Finding[]> } = {}):Promise<OrderResult> {
+  async executeOrder(baseline:MigrationFile[], groups:{pr:number;files:MigrationFile[]}[], extensions:string[], options: { fixtures?: string[]; verify?: (pool: Pool, snapshot: SchemaSnapshot) => Promise<Finding[]>; compareDataState?: boolean; excludeDataColumns?: string[] } = {}):Promise<OrderResult> {
     const started=Date.now(); const findings:Finding[]=[]; const {pool,before}=await this.database(baseline,extensions);
     try {
       for (const fixture of options.fixtures ?? []) await pool.query(fixture);
@@ -64,8 +70,9 @@ export class PostgresValidationEnvironment {
       let snapshot: SchemaSnapshot;
       try { snapshot = await inspectSchema(client); } finally { client.release(); }
       if (sqlPassed && options.verify) findings.push(...await options.verify(pool, snapshot));
+      const dataState = sqlPassed && options.compareDataState !== false ? await captureDataState(pool, options.excludeDataColumns) : undefined;
       return { order:groups.map((g)=>g.pr), passed:!findings.some((f)=>f.severity==="error"), sqlPassed, contractsChecked: sqlPassed && !!options.verify,
-        findings, ...(sqlPassed ? {finalFingerprint:snapshot.fingerprint}:{}), snapshot, affectedObjects: diffObjects(before, snapshot), durationMs:Date.now()-started };
+        findings, ...(sqlPassed ? {finalFingerprint:snapshot.fingerprint}:{}), ...(dataState ? {dataState}:{}), snapshot, affectedObjects: diffObjects(before, snapshot), durationMs:Date.now()-started };
     } finally { await pool.end(); }
   }
 
@@ -76,10 +83,10 @@ export class PostgresValidationEnvironment {
       for(const fixture of fixtures)await pool.query(fixture);
       for(const file of prior.filter((file)=>file.direction==="up").sort((a,b)=>a.order-b.order || a.path.localeCompare(b.path)))await pool.query(file.sql);
       const beforeClient=await pool.connect();let before:SchemaSnapshot;try{before=await inspectSchema(beforeClient);}finally{beforeClient.release();}
-      const dataBefore=await hashData(pool);
+      const dataBefore=(await captureDataState(pool)).fingerprint;
       try { await pool.query(up.sql); await pool.query(down.sql); } catch(error) { findings.push(sqlError(error,down.path,down.sql)); }
       const client=await pool.connect(); let after:SchemaSnapshot; try { after=await inspectSchema(client); } finally {client.release();}
-      const dataAfter=await hashData(pool);const dataRestored=dataBefore===dataAfter;
+      const dataAfter=(await captureDataState(pool)).fingerprint;const dataRestored=dataBefore===dataAfter;
       if (before.fingerprint!==after.fingerprint) findings.push({code:"ROLLBACK_SCHEMA_MISMATCH",severity:"error",title:"Rollback did not restore the schema",message:"The catalog fingerprint after rollback differs from the original.",file:down.path,evidence:{before:before.fingerprint,after:after.fingerprint,objects:diffObjects(before,after).map((o)=>o.id)}});
       if(!dataRestored)findings.push({code:"ROLLBACK_DATA_MISMATCH",severity:"error",title:"Rollback did not restore fixture data",message:"Row hashes after rollback differ from the pre-migration fixture state.",file:down.path,evidence:{before:dataBefore,after:dataAfter}});
       const unsafe=findings.some((f)=>f.severity==="error" || f.code.startsWith("DROP_") || f.code==="TYPE_CONVERSION");
@@ -88,10 +95,19 @@ export class PostgresValidationEnvironment {
   }
 }
 
-async function hashData(pool:Pool):Promise<string>{
-  const {rows}=await pool.query<{schemaname:string;tablename:string}>(`SELECT schemaname,tablename FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY 1,2`);const hashes:string[]=[];
-  for(const table of rows){const target=`${safeIdentifier(table.schemaname)}.${safeIdentifier(table.tablename)}`;const result=await pool.query<{hash:string}>(`SELECT md5(coalesce(string_agg(row_to_json(t)::text, E'\\n' ORDER BY row_to_json(t)::text),'')) hash FROM ${target} t`);hashes.push(`${table.schemaname}.${table.tablename}:${result.rows[0]?.hash??""}`);}
-  return createHash("sha256").update(hashes.join("\n")).digest("hex");
+export async function captureDataState(pool:Pool,excludedColumns:string[]=[]):Promise<DataStateSnapshot>{
+  const {rows}=await pool.query<{schemaname:string;tablename:string}>(`SELECT schemaname,tablename FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY 1,2`);
+  const tables=[];
+  for(const table of rows){
+    const tableName=`${table.schemaname}.${table.tablename}`;const target=`${safeIdentifier(table.schemaname)}.${safeIdentifier(table.tablename)}`;
+    const excluded=excludedColumns.filter((column)=>column.startsWith(`${tableName}.`)).map((column)=>column.slice(tableName.length+1));
+    const result=await pool.query<{hash:string;count:string}>(`SELECT md5(coalesce(string_agg((to_jsonb(t) - $1::text[])::text, E'\\n' ORDER BY (to_jsonb(t) - $1::text[])::text),'')) hash,count(*)::text count FROM ${target} t`,[excluded]);
+    const sample=await pool.query<{value:Record<string,unknown>}>(`SELECT to_jsonb(t) - $1::text[] value FROM ${target} t ORDER BY (to_jsonb(t) - $1::text[])::text LIMIT 5`,[excluded]);
+    tables.push({table:tableName,rowCount:Number(result.rows[0]?.count??0),fingerprint:result.rows[0]?.hash??"",sampleRows:sample.rows.map((row)=>row.value)});
+  }
+  const sequenceRows=await pool.query<{schema:string;name:string}>(`SELECT n.nspname schema,c.relname name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema') ORDER BY 1,2`);
+  const sequences=[];for(const sequence of sequenceRows.rows){const name=`${sequence.schema}.${sequence.name}`;const state=await pool.query<{last_value:string;is_called:boolean}>(`SELECT last_value::text,is_called FROM ${safeIdentifier(sequence.schema)}.${safeIdentifier(sequence.name)}`);const value=state.rows[0];sequences.push({sequence:name,...(value?.last_value!==undefined?{lastValue:value.last_value}:{}),isCalled:value?.is_called??false});}
+  const fingerprint=createHash("sha256").update(JSON.stringify({tables:tables.map(({sampleRows:_,...table})=>table),sequences})).digest("hex");return {tables,sequences,fingerprint};
 }
 
 export function sqlError(error:unknown,file:string,sql?:string):Finding {

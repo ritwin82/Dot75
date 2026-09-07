@@ -6,13 +6,13 @@ type CatalogRow = { kind: ObjectKind; schema_name: string | null; relation_name:
 
 const OBJECTS_SQL = `
 WITH objects AS (
-  SELECT 'table'::text kind, n.nspname schema_name, c.relname relation_name, c.relname object_name,
-         concat(c.relpersistence, ':', c.relkind) definition
+  SELECT CASE WHEN c.relispartition THEN 'partition' ELSE 'table' END::text kind, n.nspname schema_name, c.relname relation_name, c.relname object_name,
+         concat(c.relpersistence, ':', c.relkind, '|rls=',c.relrowsecurity,'|force_rls=',c.relforcerowsecurity,'|replica_identity=',c.relreplident) definition
     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
    WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname !~ '^pg_toast'
   UNION ALL
   SELECT 'column', n.nspname, c.relname, a.attname,
-         concat(format_type(a.atttypid,a.atttypmod),'|nullable=',NOT a.attnotnull,'|default=',coalesce(pg_get_expr(d.adbin,d.adrelid),''))
+         concat(format_type(a.atttypid,a.atttypmod),'|nullable=',NOT a.attnotnull,'|default=',coalesce(pg_get_expr(d.adbin,d.adrelid),''),'|identity=',a.attidentity,'|generated=',a.attgenerated)
     FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
     LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
    WHERE a.attnum>0 AND NOT a.attisdropped AND c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
@@ -25,11 +25,11 @@ WITH objects AS (
     FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_class t ON t.oid=x.indrelid JOIN pg_namespace n ON n.oid=t.relnamespace
    WHERE n.nspname NOT IN ('pg_catalog','information_schema')
   UNION ALL
-  SELECT 'view', n.nspname, c.relname, c.relname, pg_get_viewdef(c.oid,true)
+  SELECT CASE WHEN c.relkind='m' THEN 'materialized_view' ELSE 'view' END, n.nspname, c.relname, c.relname, pg_get_viewdef(c.oid,true)
     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
    WHERE c.relkind IN ('v','m') AND n.nspname NOT IN ('pg_catalog','information_schema')
   UNION ALL
-  SELECT 'function', n.nspname, NULL, p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', pg_get_functiondef(p.oid)
+  SELECT CASE WHEN p.prokind='p' THEN 'procedure' ELSE 'function' END, n.nspname, NULL, p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', pg_get_functiondef(p.oid)
     FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
    WHERE n.nspname NOT IN ('pg_catalog','information_schema')
   UNION ALL
@@ -46,6 +46,25 @@ WITH objects AS (
   SELECT 'enum', n.nspname, NULL, t.typname, string_agg(e.enumlabel,',' ORDER BY e.enumsortorder)
     FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace JOIN pg_enum e ON e.enumtypid=t.oid
    WHERE n.nspname NOT IN ('pg_catalog','information_schema') GROUP BY n.nspname,t.typname
+  UNION ALL
+  SELECT 'sequence', n.nspname, NULL, c.relname, concat('persistence=',c.relpersistence)
+    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+   WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
+  UNION ALL
+  SELECT 'domain', n.nspname, NULL, t.typname, concat(format_type(t.typbasetype,t.typtypmod),'|not_null=',t.typnotnull,'|default=',coalesce(t.typdefault,''))
+    FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
+   WHERE t.typtype='d' AND n.nspname NOT IN ('pg_catalog','information_schema')
+  UNION ALL
+  SELECT 'composite', n.nspname, NULL, t.typname, coalesce(pg_catalog.obj_description(t.oid,'pg_type'),'')
+    FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
+   WHERE t.typtype='c' AND t.typrelid=0 AND n.nspname NOT IN ('pg_catalog','information_schema')
+  UNION ALL
+  SELECT 'collation', n.nspname, NULL, c.collname, concat(c.collprovider,'|',c.collcollate,'|',c.collctype)
+    FROM pg_collation c JOIN pg_namespace n ON n.oid=c.collnamespace
+   WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+  UNION ALL
+  SELECT 'publication', NULL, NULL, pubname, concat('insert=',pubinsert,'|update=',pubupdate,'|delete=',pubdelete,'|truncate=',pubtruncate,'|all_tables=',puballtables)
+    FROM pg_publication
 )
 SELECT * FROM objects
  WHERE schema_name IS NULL OR (schema_name !~ '^pg_' AND schema_name <> 'information_schema')
