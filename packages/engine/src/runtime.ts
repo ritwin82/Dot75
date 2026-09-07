@@ -32,10 +32,12 @@ export class PostgresValidationEnvironment {
     await admin.query(`CREATE DATABASE ${safeIdentifier(name)}`);
     await admin.end();
     const pool = new Pool({ connectionString:this.adminUrl.replace(/\/postgres$/,`/${name}`) });
+    try {
     for (const extension of extensions) await pool.query(`CREATE EXTENSION IF NOT EXISTS ${safeIdentifier(extension)}`);
     for (const file of files.filter((f) => f.direction === "up").sort((a,b) => a.order-b.order || a.path.localeCompare(b.path))) await pool.query(file.sql);
     const client = await pool.connect();
     try { return { pool, before:await inspectSchema(client) }; } finally { client.release(); }
+    } catch (error) { await pool.end(); throw error; }
   }
 
   async inspectChange(baseline: MigrationFile[], change: MigrationFile[], extensions: string[]): Promise<{ snapshot:SchemaSnapshot; affected:ReturnType<typeof diffObjects>; findings:Finding[] }> {
@@ -43,31 +45,39 @@ export class PostgresValidationEnvironment {
     const findings: Finding[] = [];
     try {
       for (const file of change.filter((f) => f.direction === "up").sort((a,b)=>a.order-b.order)) {
-        try { await pool.query(file.sql); } catch (error) { findings.push(sqlError(error,file.path)); break; }
+        try { await pool.query(file.sql); } catch (error) { findings.push(sqlError(error,file.path,file.sql)); break; }
       }
       const client = await pool.connect();
       try { const snapshot=await inspectSchema(client); return { snapshot, affected:diffObjects(before,snapshot), findings }; } finally { client.release(); }
     } finally { await pool.end(); }
   }
 
-  async executeOrder(baseline:MigrationFile[], groups:{pr:number;files:MigrationFile[]}[], extensions:string[]):Promise<OrderResult> {
-    const started=Date.now(); const findings:Finding[]=[]; const {pool}=await this.database(baseline,extensions);
+  async executeOrder(baseline:MigrationFile[], groups:{pr:number;files:MigrationFile[]}[], extensions:string[], options: { fixtures?: string[]; verify?: (pool: Pool, snapshot: SchemaSnapshot) => Promise<Finding[]> } = {}):Promise<OrderResult> {
+    const started=Date.now(); const findings:Finding[]=[]; const {pool,before}=await this.database(baseline,extensions);
     try {
-      outer: for (const group of groups) for (const file of group.files.filter((f)=>f.direction==="up").sort((a,b)=>a.order-b.order)) {
-        try { await pool.query(file.sql); } catch(error) { findings.push({ ...sqlError(error,file.path), evidence:{ ...sqlError(error,file.path).evidence, pr:group.pr } }); break outer; }
+      for (const fixture of options.fixtures ?? []) await pool.query(fixture);
+      outer: for (const group of groups) for (const file of group.files.filter((f)=>f.direction==="up").sort((a,b)=>a.order-b.order || a.path.localeCompare(b.path))) {
+        try { await pool.query(file.sql); } catch(error) { findings.push({ ...sqlError(error,file.path,file.sql), evidence:{ ...sqlError(error,file.path,file.sql).evidence, pr:group.pr } }); break outer; }
       }
-      let finalFingerprint: string | undefined;
-      if (!findings.some((f)=>f.severity==="error")) { const client=await pool.connect(); try { finalFingerprint=(await inspectSchema(client)).fingerprint; } finally { client.release(); } }
-      return { order:groups.map((g)=>g.pr), passed:!findings.some((f)=>f.severity==="error"), findings, ...(finalFingerprint?{finalFingerprint}:{}), durationMs:Date.now()-started };
+      const sqlPassed = !findings.some((f)=>f.severity==="error");
+      const client = await pool.connect();
+      let snapshot: SchemaSnapshot;
+      try { snapshot = await inspectSchema(client); } finally { client.release(); }
+      if (sqlPassed && options.verify) findings.push(...await options.verify(pool, snapshot));
+      return { order:groups.map((g)=>g.pr), passed:!findings.some((f)=>f.severity==="error"), sqlPassed, contractsChecked: sqlPassed && !!options.verify,
+        findings, ...(sqlPassed ? {finalFingerprint:snapshot.fingerprint}:{}), snapshot, affectedObjects: diffObjects(before, snapshot), durationMs:Date.now()-started };
     } finally { await pool.end(); }
   }
 
-  async verifyRollback(baseline:MigrationFile[], up:MigrationFile, down:MigrationFile|undefined, extensions:string[],fixtures:string[]=[]):Promise<RollbackResult> {
+  async verifyRollback(baseline:MigrationFile[], up:MigrationFile, down:MigrationFile|undefined, extensions:string[],fixtures:string[]=[],prior:MigrationFile[]=[]):Promise<RollbackResult> {
     if (!down) return { migration:up.path,status:"non_reversible",schemaRestored:false,findings:[{code:"NO_DOWN_MIGRATION",severity:"warning",title:"Migration is non-reversible",message:`No down migration is paired with ${up.path}.`,file:up.path}] };
-    const {pool,before}=await this.database(baseline,extensions); const findings=[...destructiveStatements(up)];
+    const {pool}=await this.database(baseline,extensions); const findings=[...destructiveStatements(up)];
     try {
-      for(const fixture of fixtures)await pool.query(fixture);const dataBefore=await hashData(pool);
-      try { await pool.query(up.sql); await pool.query(down.sql); } catch(error) { findings.push(sqlError(error,down.path)); }
+      for(const fixture of fixtures)await pool.query(fixture);
+      for(const file of prior.filter((file)=>file.direction==="up").sort((a,b)=>a.order-b.order || a.path.localeCompare(b.path)))await pool.query(file.sql);
+      const beforeClient=await pool.connect();let before:SchemaSnapshot;try{before=await inspectSchema(beforeClient);}finally{beforeClient.release();}
+      const dataBefore=await hashData(pool);
+      try { await pool.query(up.sql); await pool.query(down.sql); } catch(error) { findings.push(sqlError(error,down.path,down.sql)); }
       const client=await pool.connect(); let after:SchemaSnapshot; try { after=await inspectSchema(client); } finally {client.release();}
       const dataAfter=await hashData(pool);const dataRestored=dataBefore===dataAfter;
       if (before.fingerprint!==after.fingerprint) findings.push({code:"ROLLBACK_SCHEMA_MISMATCH",severity:"error",title:"Rollback did not restore the schema",message:"The catalog fingerprint after rollback differs from the original.",file:down.path,evidence:{before:before.fingerprint,after:after.fingerprint,objects:diffObjects(before,after).map((o)=>o.id)}});
@@ -84,7 +94,10 @@ async function hashData(pool:Pool):Promise<string>{
   return createHash("sha256").update(hashes.join("\n")).digest("hex");
 }
 
-function sqlError(error:unknown,file:string):Finding {
+export function sqlError(error:unknown,file:string,sql?:string):Finding {
   const e=error as {message?:string;code?:string;detail?:string;position?:string};
-  return {code:e.code??"SQL_EXECUTION_FAILED",severity:"error",title:"PostgreSQL rejected the migration",message:e.message??String(error),file,evidence:{detail:e.detail,position:e.position}};
+  const position = Number(e.position);
+  const line = sql !== undefined && Number.isInteger(position) && position > 0 && position <= [...sql].length + 1
+    ? [...sql].slice(0, position - 1).join("").split("\n").length : undefined;
+  return {...(line ? {line} : {}),code:e.code??"SQL_EXECUTION_FAILED",severity:"error",title:"PostgreSQL rejected the migration",message:e.message??String(error),file,evidence:{detail:e.detail,position:e.position}};
 }

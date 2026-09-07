@@ -51,7 +51,7 @@ export async function runDataContracts(pool:Pool,config:ContractMappings):Promis
   const findings:Finding[]=[];
   for(const mapping of config.mappings.filter((m)=>m.enabled)) {
     const sql=templates[mapping.template].dataCheck?.(mapping.bindings); if(!sql) continue;
-    try { const {rows}=await pool.query<{failures:number}>(sql); if((rows[0]?.failures??0)>0) findings.push({code:"DATA_CONTRACT_FAILED",severity:"error",title:"Fixture data violates a contract",message:`${mapping.template} found ${rows[0]!.failures} invalid row(s).`,evidence:{template:mapping.template}}); }
+    try { const {rows}=await pool.query<{failures:number}>(sql); if((rows[0]?.failures??0)>0) findings.push({code:"DATA_CONTRACT_FAILED",severity:"error",title:"Fixture data violates a contract",message:`${mapping.template} found ${rows[0]!.failures} invalid row(s).`,evidence:{template:mapping.template,failures:rows[0]!.failures,objects:[`table:${mapping.bindings.table}`],rule:mapping.template==="inventory"?"Quantity must be non-negative":"Payment amount must be non-negative and currency must be present"}}); }
     catch(error) { findings.push({code:"DATA_CONTRACT_ERROR",severity:"error",title:"Data contract could not run",message:error instanceof Error?error.message:String(error),evidence:{template:mapping.template}}); }
   }
   return findings;

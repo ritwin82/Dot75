@@ -2,7 +2,7 @@
   "name": "@localmesh/engine", "version": "0.1.0", "type": "module", "main": "./dist/index.js", "types": "./dist/index.d.ts",
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" },
   "dependencies": {
-    "@localmesh/inspector": "workspace:*", "@localmesh/shared": "workspace:*", "pg": "^8.16.3", "testcontainers": "^11.5.1", "zod": "^4.1.5"
+    "@localmesh/contracts": "workspace:*", "@localmesh/inspector": "workspace:*", "@localmesh/shared": "workspace:*", "pg": "^8.16.3", "testcontainers": "^11.5.1", "zod": "^4.1.5"
   },
   "devDependencies": { "@types/pg": "^8.15.5" }
 }

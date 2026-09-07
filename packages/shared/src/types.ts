@@ -47,6 +47,10 @@ export interface OrderResult {
   findings: Finding[];
   finalFingerprint?: string;
   durationMs: number;
+  sqlPassed?: boolean;
+  contractsChecked?: boolean;
+  snapshot?: SchemaSnapshot;
+  affectedObjects?: SchemaObject[];
 }
 
 export interface RollbackResult {
@@ -74,6 +78,15 @@ export interface ValidationResult {
   rollbacks: RollbackResult[];
   performance: Finding[];
   explanation?: AiExplanation;
+  explanationStatus?: "pending" | "complete";
+  provenance?: {
+    pullRequests: Array<{ number: number; author: string; headSha: string; title?: string }>;
+    currentPrFiles: string[];
+    trigger?: string;
+    inputDigest?: string;
+    engineVersion?: string;
+  };
+  scope?: { candidatePrs: number[]; skippedPrs: number[]; contractMappings: number; fixtureFiles: number; rollbackChecked: boolean; decisions?: Array<{ pr: number; decision: "tested" | "skipped"; reason: string }> };
 }
 
 export interface AiExplanation {
@@ -84,6 +97,10 @@ export interface AiExplanation {
   confidence: "low" | "medium" | "high";
   assumptions: string[];
   source: "ollama" | "deterministic";
+  model?: string;
+  durationMs?: number;
+  fallbackReason?: string;
+  cached?: boolean;
 }
 
 export interface ValidationJob {

@@ -7,6 +7,9 @@ describe("catalog normalization", () => {
     const col = { id: "column:public.orders.id", kind: "column" as const, schema: "public", relation: "orders", name: "id", definition: "uuid" };
     expect(fingerprintObjects([table,col])).toBe(fingerprintObjects([col,table]));
   });
+  it("preserves meaningful whitespace inside SQL literals", () => {
+    expect(fingerprintObjects([{ ...table, definition: "DEFAULT 'a b'" }])).not.toBe(fingerprintObjects([{ ...table, definition: "DEFAULT 'a  b'" }]));
+  });
   it("detects removals and groups relation objects", () => {
     const before = { objects:[table], edges:[], fingerprint:"x" };
     const after = { objects:[], edges:[], fingerprint:"y" };

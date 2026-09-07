@@ -47,7 +47,9 @@ WITH objects AS (
     FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace JOIN pg_enum e ON e.enumtypid=t.oid
    WHERE n.nspname NOT IN ('pg_catalog','information_schema') GROUP BY n.nspname,t.typname
 )
-SELECT * FROM objects ORDER BY kind,schema_name,relation_name,object_name`;
+SELECT * FROM objects
+ WHERE schema_name IS NULL OR (schema_name !~ '^pg_' AND schema_name <> 'information_schema')
+ ORDER BY kind,schema_name,relation_name,object_name`;
 
 const EDGES_SQL = `
 SELECT 'column:'||ns.nspname||'.'||cl.relname||'.'||att.attname AS "from",
@@ -68,7 +70,7 @@ function objectId(row: CatalogRow): string {
 }
 
 export function fingerprintObjects(objects: SchemaObject[]): string {
-  const normalized = objects.map(({ id, definition }) => `${id}=${definition.replace(/\s+/g," ").trim()}`).sort().join("\n");
+  const normalized = objects.map(({ id, definition }) => JSON.stringify([id, definition])).sort().join("\n");
   return createHash("sha256").update(normalized).digest("hex");
 }
 
