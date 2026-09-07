@@ -4,7 +4,7 @@ import { RefreshResult } from "../../components/refresh-result";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Dashboard" };
-type Job = { id: string; owner: string; repo: string; prNumber: number; status: string; result?: ValidationResult; createdAt: string };
+type Job = { id: string; owner: string; repo: string; prNumber: number; status: string; source?: string; result?: ValidationResult; createdAt: string };
 
 export default async function Dashboard() {
   let list: Job[];
@@ -25,7 +25,8 @@ export default async function Dashboard() {
         const r = job.result;
         const errors = r ? [...r.orders.flatMap((order) => order.findings), ...r.contracts, ...r.rollbacks.flatMap((rollback) => rollback.findings)].filter((finding) => finding.severity === "error") : [];
         const categories = [...new Set(errors.map((finding) => findingCategory(finding.code)))];
-        return <a className="check-row" href={`/jobs/${job.id}`} key={job.id}><span className="repo"><b>{job.owner}/{job.repo}</b><small>PR #{job.prNumber}{job.owner === "local-demo" ? " · Local simulation" : ""}</small><small>{categories.join(" · ") || (job.status === "passed" ? "No blocking findings" : "See check details")}</small></span><span><span className={`status ${job.status}`}><i/>{job.status}</span><small className="explanation-label">{r?.explanationStatus === "pending" ? "AI preparing…" : r?.explanation?.source === "ollama" ? "Ollama explained" : r?.explanation?.fallbackReason ? "AI unavailable" : "Database evidence"}</small></span><span className="table-value">{r?.comparedPullRequests.map((pr) => `#${pr}`).join(", ") || "—"}</span><time className="table-value">{new Date(job.createdAt).toLocaleString()}</time></a>;
+        const source = job.owner === "local-demo" ? "Local simulation" : job.source === "github_action" ? "GitHub Action" : "GitHub App";
+        return <a className="check-row" href={`/jobs/${job.id}`} key={job.id}><span className="repo"><b>{job.owner}/{job.repo}</b><small>PR #{job.prNumber} · {source}</small><small>{categories.join(" · ") || (job.status === "passed" ? "No blocking findings" : "See check details")}</small></span><span><span className={`status ${job.status}`}><i/>{job.status}</span><small className="explanation-label">{r?.explanationStatus === "pending" ? "AI preparing…" : r?.explanation?.source === "ollama" ? "Ollama explained" : r?.explanation?.fallbackReason ? "AI unavailable" : "Database evidence"}</small></span><span className="table-value">{r?.comparedPullRequests.map((pr) => `#${pr}`).join(", ") || "—"}</span><time className="table-value">{new Date(job.createdAt).toLocaleString()}</time></a>;
       })}</div> : <div className="dashboard-empty"><span>00</span><div><h3>No checks recorded yet</h3><p>Update a migration PR in a connected repository or run the local demo.</p></div></div>}
     </section>
   </div>;

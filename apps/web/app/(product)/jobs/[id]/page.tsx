@@ -5,7 +5,7 @@ import { RefreshResult } from "../../../components/refresh-result";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Migration check" };
-type Job = { id: string; owner: string; repo: string; pr_number: number; status: string; result?: ValidationResult; error?: string };
+type Job = { id: string; owner: string; repo: string; pr_number: number; status: string; source?: string; result?: ValidationResult; error?: string };
 async function getJob(id: string): Promise<Job | null> {
   const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100"}/api/jobs/${encodeURIComponent(id)}`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
   if (response.status === 404) return null;
@@ -35,6 +35,7 @@ export default async function Detail({ params }: { params: Promise<{ id: string 
       <div className="detail-title"><div><div className="product-kicker">{job.owner}/{job.repo} · PR #{job.pr_number}</div><h1>Migration review</h1></div><span className={`status status-large ${job.status}`}><i/>{job.status}</span></div>
       <p>{summary}</p>
       {job.owner === "local-demo" && <p className="scope-note">Local demo · simulated PRs executed in real PostgreSQL. GitHub delivery was not tested.</p>}
+      {job.owner !== "local-demo" && <p className="scope-note">Result source: {job.source === "github_action" ? "verified GitHub Action publication" : "GitHub App service validation"}.</p>}
       <RefreshResult active={active || pending}/>
       {job.error && <details className="service-error"><summary>Inspect service error</summary><pre>{job.error}</pre></details>}
     </section>
