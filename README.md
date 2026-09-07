@@ -28,21 +28,23 @@ Every new result carries the exact tested revisions, coverage decisions, and a S
 - Rebuilds the target branch in the configured PostgreSQL 14–17 image.
 - Discovers migration changes in the current and other open pull requests.
 - Diffs PostgreSQL catalogs and builds dependency-aware change sets.
-- Skips unrelated PRs and executes related pairs as `A → B` and `B → A`.
-- Detects SQL failures and order-dependent final schema fingerprints.
-- Validates Git-committed schema and fixture-backed data contracts.
+- Skips unrelated PRs, executes related pairs in both orders, and tests bounded three-PR permutations.
+- Detects SQL failures plus order-dependent schema, fixture-row, and sequence fingerprints.
+- Classifies each measured PR relationship as compatible, conflicting, order-sensitive, independent, invalid alone, or untested.
+- Validates Git-committed schema and fixture-backed data contracts, including repository-defined schema and read-only SQL assertions.
 - Tests paired `.up.sql` and `.down.sql` files and reports unsafe or missing rollbacks.
-- Warns about blocking indexes, eager constraint validation, and likely rewrites.
-- Publishes a required `LocalMesh Sensei` Check and serves a tenant-scoped hosted or local dashboard.
+- Warns about blocking indexes, eager validation, unsafe `NOT NULL`, volatile defaults, unbounded data changes, routine replacement, and likely rewrites.
+- Discovers raw SQL, Prisma, Drizzle, Flyway, and Liquibase formatted SQL migrations.
+- Publishes a required `LocalMesh Sensei` Check and serves tenant-scoped compatibility maps, recurrence history, progress events, and portable JSON, Markdown, SARIF, and JUnit evidence.
 
 ## Architecture
 
 | Component | Responsibility |
 |---|---|
 | `apps/action` | GitHub Action discovery, CLI invocation, provenance-checked publication |
-| `apps/api` | Signed GitHub webhooks, signed Action result ingestion, job API, durable queue |
+| `apps/api` | Signed GitHub webhooks, signed Action result ingestion, tenant-scoped evidence API, durable queue, readiness and metrics |
 | `apps/worker` | GitHub revision loading, PostgreSQL containers, validation orchestration |
-| `apps/web` | Job overview and detailed review dashboard |
+| `apps/web` | Job overview, detailed evidence, compatibility map, and recurrence dashboard |
 | `packages/inspector` | Normalized PostgreSQL catalog snapshots and dependency edges |
 | `packages/engine` | Candidate filtering, execution orders, rollback and performance analysis |
 | `packages/contracts` | Six contract templates, mappings, fixtures, suggestions |
@@ -91,7 +93,9 @@ The service metadata is stored in PostgreSQL and jobs are delivered through `pg-
 
 ## Migration and contract conventions
 
-Migration filenames must end with `.up.sql` or `.down.sql`. A leading integer controls execution order; lexical path order breaks ties. Forward-only SQL is allowed and reported as non-reversible.
+Raw SQL migration filenames must end with `.up.sql` or `.down.sql`. Configuration version 2 can select `prisma`, `drizzle`, `flyway`, or `liquibase` formatted SQL discovery. Rails, Django, and Alembic are registered but fail closed until an isolated project runner is available. Forward-only migrations are allowed and reported as non-reversible.
+
+Fixture-state comparison is enabled by default. Use `data_state.exclude_columns` for nondeterministic values such as generated timestamps, and keep the exclusion list narrow. Three-PR exploration is bounded by `checks.max_group_permutations`, so the result reports any permutations it did not execute.
 
 Mappings live in `.localmesh/contracts.yml` and must be committed before enforcement. Six templates are included: users, orders, payments, inventory, soft deletion, and multi-tenancy. SQL fixtures under `.localmesh/fixtures` are loaded only into disposable databases.
 
@@ -126,4 +130,4 @@ Open two PRs that pass alone but both modify the same database contract. Show Lo
 
 ## Current boundaries
 
-The MVP supports raw PostgreSQL SQL only. The hosted control plane supports GitHub account installations and tenant-scoped results, but it does not include billing, production-row ingestion, or adapters for Prisma, Flyway, Liquibase, Rails, Django, or Alembic.
+The SQL adapters execute migration SQL only; they do not run Prisma generators or application framework code. Liquibase support currently covers formatted SQL, not XML, YAML, or JSON changelogs. Rails, Django, and Alembic remain disabled until a project-container runner is available. The hosted control plane does not include billing or production-row ingestion.
