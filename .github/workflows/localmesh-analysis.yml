@@ -1,0 +1,49 @@
+name: LocalMesh analysis
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: localmesh-analysis-${{ github.repository_id }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ritwin82/Dot75
+          ref: 6292857625b3fd324eec021d3fc3bd6c232c0466
+          path: localmesh-tool
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Build trusted LocalMesh revision
+        working-directory: localmesh-tool
+        shell: bash
+        run: |
+          npm install --global pnpm@10.15.1 --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm --filter @localmesh/action... --filter @localmesh/worker... build
+      - name: Discover real pull requests and validate migrations
+        uses: ./localmesh-tool
+        with:
+          token: ${{ github.token }}
+          output-directory: ${{ runner.temp }}/localmesh-output
+          cache-directory: ${{ runner.tool_cache }}/localmesh-discovery-${{ github.repository_id }}
+      - name: Retain verified results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: localmesh-results-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/localmesh-output/localmesh-results.json
+          retention-days: 7
+          if-no-files-found: warn
