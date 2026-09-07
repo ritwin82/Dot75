@@ -2,10 +2,11 @@ import {randomUUID} from "node:crypto";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import {PgBoss} from "pg-boss";
-import {cancelStaleJobs,ensureSchema,getJob,listJobs,saveJob,setCheckRunId} from "@localmesh/db";
+import {cancelStaleJobs,ensureSchema,getJob,listJobs,saveActionResults,saveJob,setCheckRunId} from "@localmesh/db";
 import {cancelCheck,createCheck,installationClient,verifyWebhookSignature} from "@localmesh/github";
 import type {ValidationJob} from "@localmesh/shared";
 import {extractPullRequest,resolveValidationBase} from "./webhook.js";
+import {ActionIngestionError,authenticateActionIngestion} from "./action-ingestion.js";
 
 const server=Fastify({logger:true,bodyLimit:2_000_000});
 await server.register(cors,{origin:process.env.WEB_ORIGIN??"http://localhost:3000"});
@@ -17,6 +18,19 @@ await ensureSchema(); const boss=new PgBoss({connectionString:databaseUrl}); awa
 server.get("/health",async()=>({status:"ok",service:"localmesh-api"}));
 server.get("/api/jobs",async(request)=>{const query=request.query as {limit?:string};return {jobs:await listJobs(Number(query.limit??50))};});
 server.get("/api/jobs/:id",async(request,reply)=>{const job=await getJob((request.params as {id:string}).id);return job??reply.code(404).send({error:"Job not found"});});
+
+server.post("/api/action-results",{bodyLimit:32*1024*1024},async(request,reply)=>{
+  const secret=process.env.LOCALMESH_INGESTION_SECRET;
+  if(!secret)return reply.code(503).send({error:"Action ingestion is not configured"});
+  try{
+    const payload=authenticateActionIngestion(request.body as Buffer,request.headers["x-localmesh-signature-256"] as string|undefined,secret);
+    const saved=await saveActionResults(payload.repository,payload.results);
+    return reply.code(202).send({accepted:true,repository:payload.repository,saved});
+  }catch(error){
+    if(error instanceof ActionIngestionError)return reply.code(error.statusCode).send({error:error.message});
+    throw error;
+  }
+});
 
 server.post("/webhooks/github",async(request,reply)=>{
   const raw=request.body as Buffer; const secret=process.env.GITHUB_WEBHOOK_SECRET;
