@@ -6,11 +6,11 @@ AI is optional. When Ollama is available it explains verified failures and propo
 
 ## Automatic checks and reproducible evidence
 
-LocalMesh now supports a thin GitHub Action as an alternative to the webhook service. It discovers other open migration PRs by immutable SHA, invokes the same validation engine through a portable JSON CLI, and publishes detailed Checks and a sticky PR comment. Default-branch pushes refresh open migration PRs without comment notifications; merge queues validate the full cumulative group.
+LocalMesh now supports a thin GitHub Action as an alternative to the webhook service. It discovers other open migration PRs by immutable SHA, invokes the same validation engine through a portable JSON CLI, and publishes detailed Checks and a sticky PR comment. Default-branch pushes refresh open migration PRs without comment notifications; merge queues validate the full cumulative group. The trusted publisher can also send its verified result to the LocalMesh API so the same run appears in the dashboard without executing it again.
 
 Start with the [architecture, Action setup, reporting guide, and prioritized roadmap](docs/architecture-and-action.md). Copy the [analysis workflow](examples/github-actions/localmesh-analysis.yml) and [publication workflow](examples/github-actions/localmesh-publication.yml) into a consuming repository and configure a reviewed tool SHA. They are templates and are not enabled automatically in this checkout.
 
-The Action route needs no webhook server, GitHub App key, service database, or inbound port. Its sample uses isolated analysis and a separate publisher. A local runner can use the same route, provided its isolation is appropriate for every PR it might analyze, including other open fork PRs.
+GitHub-only operation needs no webhook server, GitHub App key, service database, or inbound port. Dashboard synchronization is optional: configure the API and publication workflow with the same ingestion secret and run the publisher where it can reach the API. The sample keeps isolated analysis and trusted publication separate. A local analysis runner must be isolated for every PR it might analyze, including other open fork PRs.
 
 Replay a saved input without GitHub access:
 
@@ -38,7 +38,7 @@ Every new result carries the exact tested revisions, coverage decisions, and a S
 | Component | Responsibility |
 |---|---|
 | `apps/action` | GitHub Action discovery, CLI invocation, provenance-checked publication |
-| `apps/api` | Signed GitHub webhooks, Check creation, job API, durable queue |
+| `apps/api` | Signed GitHub webhooks, signed Action result ingestion, job API, durable queue |
 | `apps/worker` | GitHub revision loading, PostgreSQL containers, validation orchestration |
 | `apps/web` | Job overview and detailed review dashboard |
 | `packages/inspector` | Normalized PostgreSQL catalog snapshots and dependency edges |

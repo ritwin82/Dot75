@@ -17,10 +17,10 @@ The GitHub Action is a useful addition because it makes that question part of th
 | Reporting | Explain evidence, ownership, coverage, and next steps | `packages/github/src/reporting.ts`; Checks, annotations, sticky PR comment |
 | Optional explanation | Explain an already determined verdict | Ollama in the service worker; deterministic explanations remain available without a model |
 | Action transport | Discover, invoke the CLI, retain results, verify publication provenance | `apps/action`, root `action.yml`, workflow examples |
-| Service transport | Receive signed webhooks and process durable jobs | `apps/api`, `apps/worker`, PostgreSQL metadata, `pg-boss` |
-| Local dashboard | View service jobs, evidence, and explanations | `apps/web`; Next.js dashboard |
+| Service transport | Receive signed webhooks, ingest verified Action results, and process durable jobs | `apps/api`, `apps/worker`, PostgreSQL metadata, `pg-boss` |
+| Local dashboard | View GitHub App, GitHub Action, and local validation evidence | `apps/web`; Next.js dashboard |
 
-The Action does not currently import its results into the service job database. Its surfaces are the GitHub Check, comment, job summary, result JSON, and optional replay artifact. The existing dashboard remains the view for service jobs.
+The Action publisher can import the same verified result into the service job database. The API authenticates the exact JSON bytes with HMAC-SHA-256, validates the versioned result shape, requires the repository, run, attempt, PR, and external check identity to agree, and accepts only fresh deliveries. Storage is idempotent by repository, PR, head SHA, and base SHA, so a workflow retry updates the existing dashboard entry. No SQL is rerun during synchronization.
 
 ## Automatic behavior
 
@@ -81,11 +81,17 @@ Copy `examples/github-actions/localmesh-analysis.yml` and `localmesh-publication
 | `LOCALMESH_TOOL_REF` | Full 40-character SHA of a reviewed LocalMesh commit containing this implementation |
 | `LOCALMESH_TOOL_REPOSITORY` | Repository containing that tool commit; defaults to the consuming repository |
 | `LOCALMESH_RUNNER_JSON` | Optional JSON runner label array; defaults to `["ubuntu-latest"]` |
+| `LOCALMESH_PUBLISHER_RUNNER_JSON` | Optional JSON runner label array for the trusted publisher; use a local runner when the API is private |
+| `LOCALMESH_PLATFORM_URL` | Optional API origin reachable from the publisher, such as `http://localmesh.internal:4100` |
 | `LOCALMESH_UPLOAD_REPLAY` | Optional `true` to upload SQL/fixture replay inputs for seven days |
+
+To synchronize Action results into the dashboard, generate a high-entropy secret and set the same value as `LOCALMESH_INGESTION_SECRET` in the platform `.env` and as a GitHub Actions repository secret. Set `LOCALMESH_PLATFORM_URL` as a repository variable. Both values are required together; omitting both keeps the GitHub-only mode. The API endpoint is `POST /api/action-results`, and the publisher signs the exact request body in `x-localmesh-signature-256`.
 
 Change the example `push.branches: [main]` if the default branch has another name. The analyzer checks out only the pinned tool source. It fetches target PR SQL as data through GitHub APIs; it never checks out or installs the PR project. The tool repository must be readable with the analysis job's read-only token (or public); private cross-repository tool distribution needs a separately designed credential-free distribution mechanism for forks.
 
-The analysis job has contents/PR read permissions. The `workflow_run` publisher has contents/actions read and checks/PR write permissions and runs on a separate fresh runner. It never executes SQL or artifact-provided code. It validates the repository, originating run and attempt, workflow path, source event, expected workflow contents, target heads, peer heads, live base, and merge-group branch before publishing. A PR-modified analysis workflow cannot produce an accepted passing artifact. Changes to that workflow need to reach the trusted default branch before the new workflow is accepted.
+The analysis job has contents/PR read permissions. The `workflow_run` publisher has contents/actions read and checks/PR write permissions and runs separately. It never executes SQL or artifact-provided code. It validates the repository, originating run and attempt, workflow path, source event, expected workflow contents, target heads, peer heads, live base, and merge-group branch before publishing to GitHub and the optional dashboard. A PR-modified analysis workflow cannot produce an accepted passing artifact. Changes to that workflow need to reach the trusted default branch before the new workflow is accepted.
+
+When the platform runs only on a workstation or private network, set `LOCALMESH_PUBLISHER_RUNNER_JSON` to labels for a trusted self-hosted runner with network access to the API. That runner long-polls GitHub over an outbound connection, and then calls the private API locally; the API does not need an inbound public route. Keep this publisher runner separate from untrusted SQL analysis runners because it receives the ingestion secret and a write-capable GitHub token.
 
 Require the **LocalMesh Sensei** check from the GitHub Actions integration, require branches to be current, and enable its `merge_group` event if using merge queue. Do not enable the Action and GitHub App publisher under the same required-check name for the same repository; choose one delivery path. The example templates are not activated automatically in this checkout.
 
@@ -108,6 +114,7 @@ Implemented in this change:
 - Portable replay input and shared validation engine for the CLI, service worker, and Action.
 - SHA-aware cross-PR discovery cache and conservative treatment of unsupported migration history.
 - Automatic PR, main-refresh, and whole-group queue paths with separate publication.
+- Signed, idempotent Action-result ingestion into the existing dashboard.
 - Compatibility receipts, ownership-aware reports, explicit coverage/skip reasons, and sticky comments.
 - Data-only changes with an empty catalog diff are conservatively compared.
 - Fingerprints preserve whitespace inside SQL literals; semantically different defaults no longer become equal through blanket whitespace normalization.
