@@ -112,4 +112,30 @@ export interface ValidationJob {
   headSha: string;
   baseSha: string;
   checkRunId?: number;
+  trigger?: "pull_request" | "push" | "merge_group";
+}
+
+export interface GitHubAccountInstallation {
+  id: number;
+  accountId: number;
+  accountLogin: string;
+  accountType: string;
+  repositorySelection: string;
+  status?: "active" | "suspended" | "deleted";
+}
+
+export interface GitHubRepositoryAccess {
+  id: number;
+  owner: string;
+  repo: string;
+  fullName: string;
+  private: boolean;
+}
+
+export interface RepositoryRefreshJob {
+  installationId: number;
+  owner: string;
+  repo: string;
+  baseRef: string;
+  baseSha: string;
 }

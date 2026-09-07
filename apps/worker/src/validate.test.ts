@@ -4,7 +4,7 @@ import type { ValidationJob, ValidationResult } from "@localmesh/shared";
 const state = vi.hoisted(() => ({
   getTextFile: vi.fn(), installationClient: vi.fn(), listMigrations: vi.fn(), listSqlFiles: vi.fn(),
   discoverRevisionMigrations: vi.fn(), discoverMigrationPullRequests: vi.fn(), createDiskDiscoveryCache: vi.fn(),
-  markCheckInfrastructureFailure: vi.fn(), markCheckRunning: vi.fn(), updateCheck: vi.fn(),
+  markCheckInfrastructureFailure: vi.fn(), markCheckRunning: vi.fn(), updateCheck: vi.fn(), upsertStickyComment: vi.fn(),
   setJobStatus: vi.fn(), isJobCancelled: vi.fn(), runValidationInput: vi.fn(), explainWithOllama: vi.fn(),
   pullsGet: vi.fn(), calls: [] as string[]
 }));
@@ -93,5 +93,13 @@ describe("GitHub worker trusted discovery", () => {
     await validateJob(job);
     expect(state.calls).toEqual(["engine", "publish", "ai", "publish"]);
     expect(state.setJobStatus).toHaveBeenCalledWith(job.id, "passed", expect.objectContaining({ explanationStatus: "complete" }));
+  });
+
+  it("comments on direct PR validation and keeps main-refresh fan-out check-only", async () => {
+    await validateJob({ ...job, trigger: "pull_request" });
+    expect(state.upsertStickyComment).toHaveBeenCalledTimes(1);
+    state.upsertStickyComment.mockClear();
+    await validateJob({ ...job, trigger: "push" });
+    expect(state.upsertStickyComment).not.toHaveBeenCalled();
   });
 });

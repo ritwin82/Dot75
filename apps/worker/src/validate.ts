@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { explainWithOllama, parseValidationInput, runValidationInput, validationPlanFromInput } from "@localmesh/engine";
-import { createDiskDiscoveryCache, discoverMigrationPullRequests, discoverRevisionMigrations, getTextFile, installationClient, listMigrations, listSqlFiles, markCheckInfrastructureFailure, markCheckRunning, updateCheck, type DiscoveryIssue } from "@localmesh/github";
+import { createDiskDiscoveryCache, discoverMigrationPullRequests, discoverRevisionMigrations, getTextFile, installationClient, listMigrations, listSqlFiles, markCheckInfrastructureFailure, markCheckRunning, updateCheck, upsertStickyComment, type DiscoveryIssue } from "@localmesh/github";
 import { defaultConfig, parseConfig, type Finding, type ValidationJob, type ValidationResult } from "@localmesh/shared";
 import { isJobCancelled, setJobStatus } from "@localmesh/db";
 import { explanationContext, resultFindings } from "./validation-plan.js";
@@ -44,7 +44,7 @@ export async function validateJob(job: ValidationJob): Promise<ValidationResult>
       ...(mappingText !== undefined ? { mappingsText: mappingText } : {}), ...(metadataText !== undefined ? { metadataText } : {}),
       discoveryFindings: discoveryFindings([...current.issues, ...peers.issues], job.prNumber),
       provenance: {
-        trigger: job.prNumber === 0 ? "merge_group" : "github_app", currentPrFiles: current.migrations.map((file) => file.path),
+        trigger: job.trigger ?? (job.prNumber === 0 ? "merge_group" : "github_app"), currentPrFiles: current.migrations.map((file) => file.path),
         pullRequests: [{ number: job.prNumber, author: pr.user?.login ?? "unknown", headSha: job.headSha, title: pr.title }, ...peers.pullRequests.map((peer) => ({ number: peer.number, author: peer.author, headSha: peer.headSha, title: peer.title }))]
       }
     });
@@ -56,6 +56,10 @@ export async function validateJob(job: ValidationJob): Promise<ValidationResult>
     // Make verified evidence available before waiting on local inference.
     await setJobStatus(job.id, result.status, result);
     if (job.checkRunId) await updateCheck(octokit, job.owner, job.repo, job.checkRunId, result);
+    if (job.prNumber > 0 && job.trigger !== "push") {
+      const botLogin = process.env.GITHUB_APP_BOT_LOGIN ?? (process.env.GITHUB_APP_SLUG ? `${process.env.GITHUB_APP_SLUG}[bot]` : undefined);
+      await upsertStickyComment(octokit, job.owner, job.repo, result, botLogin ? { botLogin } : {});
+    }
     if (model) {
       result.explanation = await explainWithOllama(findings, explanationContext(validationPlanFromInput(input), result), {
         url: process.env.OLLAMA_URL ?? "http://localhost:11434", model, timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? 120000)
@@ -64,6 +68,10 @@ export async function validateJob(job: ValidationJob): Promise<ValidationResult>
       if (await isJobCancelled(job.id)) { result.status = "cancelled"; return result; }
       await setJobStatus(job.id, result.status, result);
       if (job.checkRunId) await updateCheck(octokit, job.owner, job.repo, job.checkRunId, result);
+      if (job.prNumber > 0 && job.trigger !== "push") {
+        const botLogin = process.env.GITHUB_APP_BOT_LOGIN ?? (process.env.GITHUB_APP_SLUG ? `${process.env.GITHUB_APP_SLUG}[bot]` : undefined);
+        await upsertStickyComment(octokit, job.owner, job.repo, result, botLogin ? { botLogin } : {});
+      }
     }
     return result;
   } catch (error) {

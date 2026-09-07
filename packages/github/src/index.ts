@@ -1,7 +1,7 @@
 import {createHmac,timingSafeEqual} from "node:crypto";
 import {App} from "@octokit/app";
 import {Octokit} from "@octokit/rest";
-import type {MigrationFile,ValidationResult} from "@localmesh/shared";
+import type {GitHubAccountInstallation,GitHubRepositoryAccess,MigrationFile,ValidationResult} from "@localmesh/shared";
 import {checkAnnotations,checkConclusion,checkSummary,checkTitle} from "./reporting.js";
 import {migrationDirectoryPrefix} from "./discovery.js";
 export * from "./reporting.js";
@@ -22,6 +22,51 @@ export function githubApp():App {
   app=new App({appId,privateKey,Octokit}); return app;
 }
 export async function installationClient(id:number):Promise<Octokit> { return await githubApp().getInstallationOctokit(id) as unknown as Octokit; }
+
+interface InstallationShape {
+  id: number;
+  account: { id: number; login?: string; slug?: string; type?: string } | null;
+  repository_selection: string;
+  suspended_at: string | null;
+}
+
+interface RepositoryShape {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  owner: { login: string } | null;
+}
+
+export function installationRecord(value: InstallationShape): GitHubAccountInstallation {
+  if (!value.account) throw new Error(`GitHub installation ${value.id} has no account identity.`);
+  const accountLogin = value.account.login ?? value.account.slug;
+  if (!accountLogin) throw new Error(`GitHub installation ${value.id} has no account login.`);
+  return {
+    id: value.id,
+    accountId: value.account.id,
+    accountLogin,
+    accountType: value.account.type ?? "Unknown",
+    repositorySelection: value.repository_selection,
+    status: value.suspended_at ? "suspended" : "active"
+  };
+}
+
+export function repositoryRecord(value: RepositoryShape): GitHubRepositoryAccess {
+  if (!value.owner?.login) throw new Error(`GitHub repository ${value.id} has no owner identity.`);
+  return { id: value.id, owner: value.owner.login, repo: value.name, fullName: value.full_name, private: value.private };
+}
+
+export async function getInstallationRecord(id: number): Promise<GitHubAccountInstallation> {
+  const response = await githubApp().octokit.request("GET /app/installations/{installation_id}", { installation_id: id });
+  return installationRecord(response.data as InstallationShape);
+}
+
+export async function listInstallationRepositories(id: number): Promise<GitHubRepositoryAccess[]> {
+  const client = await installationClient(id);
+  const repositories = await client.paginate(client.apps.listReposAccessibleToInstallation, { per_page: 100 });
+  return repositories.map((repository) => repositoryRecord(repository as RepositoryShape));
+}
 
 export async function createCheck(octokit:Octokit,owner:string,repo:string,headSha:string):Promise<number> {
   const {data}=await octokit.checks.create({owner,repo,name:"LocalMesh Sensei",head_sha:headSha,status:"queued",output:{title:"Migration analysis queued",summary:"LocalMesh is preparing isolated PostgreSQL validation."}});
