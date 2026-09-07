@@ -5,7 +5,12 @@ import type { GitHubAccountInstallation, GitHubRepositoryAccess, PublishedAction
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 export async function ensureSchema(): Promise<void> {
-  await pool.query(`
+  const client = await pool.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock(750075)");
+    await client.query("BEGIN");
+    try {
+      await client.query(`
     CREATE TABLE IF NOT EXISTS validation_jobs (
       id uuid PRIMARY KEY,
       installation_id bigint NOT NULL,
@@ -90,7 +95,16 @@ export async function ensureSchema(): Promise<void> {
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id);
-  `);
+      `);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    try { await client.query("SELECT pg_advisory_unlock(750075)"); }
+    finally { client.release(); }
+  }
 }
 
 export async function upsertGitHubUser(user: { id: number; login: string; avatarUrl?: string; accessTokenCiphertext?: string }): Promise<void> {
