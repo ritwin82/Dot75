@@ -3,16 +3,17 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import { PgBoss } from "pg-boss";
 import {
-  cancelStaleJobs, ensureSchema, forgetWebhookDelivery, getGitHubUserCredential, getJob, getJobForUser, linkUserInstallation,
-  listInstallationsForUser, listJobs, listJobsForUser, listRepositoriesForUser, recordWebhookDelivery,
+  cancelStaleJobs, databaseReady, ensureSchema, forgetWebhookDelivery, getGitHubUserCredential, getJob, getJobForUser, linkUserInstallation,
+  listInstallationsForUser, listJobEvents, listJobs, listJobsForUser, listRepositoriesForUser, listRepositoryJobs,
+  listRepositoryJobsForUser, recordWebhookDelivery,
   replaceInstallationRepositories, saveActionResults, saveJob, setCheckRunId, setGitHubInstallationStatus,
-  updateInstallationRepositories, upsertGitHubInstallation, upsertGitHubUser
+  updateInstallationRepositories, upsertGitHubInstallation, upsertGitHubUser, validationJobStatusCounts
 } from "@localmesh/db";
 import {
   cancelCheck, createCheck, getInstallationRecord, installationClient,
   listInstallationRepositories, verifyWebhookSignature
 } from "@localmesh/github";
-import type { RepositoryRefreshJob, ValidationJob } from "@localmesh/shared";
+import { ENGINE_VERSION, formatValidationResult, type ReportFormat, type RepositoryRefreshJob, type ValidationJob, type ValidationResult } from "@localmesh/shared";
 import { ActionIngestionError, authenticateActionIngestion } from "./action-ingestion.js";
 import { defaultBranchPush, installationFromWebhook, repositoryFromWebhook } from "./account-webhook.js";
 import {
@@ -21,6 +22,10 @@ import {
 } from "./auth.js";
 import { exchangeGitHubCode, githubAuthorizationUrl, githubInstallationUrl, userCanAccessInstallation } from "./github-oauth.js";
 import { extractPullRequest, resolveValidationBase } from "./webhook.js";
+import { buildCompatibilityGraph, type CompatibilityJob } from "./compatibility.js";
+import { renderMetrics } from "./metrics.js";
+import { openApiDocument } from "./openapi.js";
+import { buildRecurrenceSnapshot } from "./recurrence.js";
 
 const server = Fastify({ logger: true, bodyLimit: 2_000_000 });
 const auth = authConfiguration();
@@ -53,7 +58,7 @@ async function enqueueValidation(
 ): Promise<{ accepted: boolean; jobId?: string; checkRunId?: number }> {
   const stale = input.prNumber === 0 ? [] : await cancelStaleJobs(input.owner, input.repo, input.prNumber, input.headSha);
   await Promise.all(stale.flatMap((old) => old.checkRunId ? [cancelCheck(client, input.owner, input.repo, old.checkRunId)] : []));
-  const job: ValidationJob = { id: randomUUID(), installationId, ...input, trigger };
+  const job: ValidationJob = { id: randomUUID(), installationId, ...input, trigger, engineVersion: ENGINE_VERSION };
   if (!await saveJob(job)) return { accepted: false };
   const checkRunId = await createCheck(client, input.owner, input.repo, input.headSha);
   job.checkRunId = checkRunId;
@@ -63,6 +68,14 @@ async function enqueueValidation(
 }
 
 server.get("/health", async () => ({ status: "ok", service: "localmesh-api", accountConnection: auth ? "configured" : "disabled" }));
+server.get("/health/live", async () => ({ status: "ok" }));
+server.get("/health/ready", async (_request, reply) => await databaseReady()
+  ? { status: "ready", database: true, queue: true }
+  : reply.code(503).send({ status: "not_ready", database: false, queue: true }));
+server.get("/metrics", async (_request, reply) => reply
+  .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+  .send(renderMetrics(await validationJobStatusCounts(), 0)));
+server.get("/api/openapi.json", async () => openApiDocument(process.env.API_PUBLIC_ORIGIN ?? `http://localhost:${process.env.API_PORT ?? 4100}`));
 
 server.get("/auth/github", async (_request, reply) => {
   if (!auth) return reply.code(503).send({ error: "GitHub account connection is not configured" });
@@ -149,6 +162,77 @@ server.get("/api/jobs/:id", async (request, reply) => {
   })() : await getJob(id);
   if (reply.sent) return;
   return job ?? reply.code(404).send({ error: "Job not found" });
+});
+
+server.get("/api/jobs/:id/export/:format", async (request, reply) => {
+  const { id, format } = request.params as { id: string; format: string };
+  const job = auth ? await (async () => {
+    const current = requireIdentity(request, reply);
+    return current ? getJobForUser(id, current.userId) : null;
+  })() : await getJob(id);
+  if (reply.sent) return;
+  if (!job) return reply.code(404).send({ error: "Job not found" });
+  const result = (job as { result?: ValidationResult }).result;
+  if (!result) return reply.code(409).send({ error: "This validation does not have a completed result yet" });
+  if (!["json", "markdown", "sarif", "junit"].includes(format)) return reply.code(400).send({ error: "Unsupported export format" });
+  const selected = format as Exclude<ReportFormat, "human">;
+  const extensions = { json: "json", markdown: "md", sarif: "sarif", junit: "xml" };
+  const contentTypes = { json: "application/json", markdown: "text/markdown; charset=utf-8", sarif: "application/sarif+json", junit: "application/xml; charset=utf-8" };
+  return reply.header("content-type", contentTypes[selected]).header("content-disposition", `attachment; filename=localmesh-${id}.${extensions[selected]}`).send(formatValidationResult(result, selected));
+});
+
+server.get("/api/jobs/:id/events", async (request, reply) => {
+  const id = (request.params as { id: string }).id;
+  const job = auth ? await (async () => {
+    const current = requireIdentity(request, reply);
+    return current ? getJobForUser(id, current.userId) : null;
+  })() : await getJob(id);
+  if (reply.sent) return;
+  if (!job) return reply.code(404).send({ error: "Job not found" });
+  const requestedAfter = Number((request.query as { after?: string }).after ?? 0);
+  const after = Number.isSafeInteger(requestedAfter) && requestedAfter >= 0 ? requestedAfter : 0;
+  if (!request.headers.accept?.includes("text/event-stream")) return { events: await listJobEvents(id, after) };
+  reply.hijack();
+  reply.raw.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
+  let cursor = after;
+  let active = true;
+  const flush = async () => {
+    try {
+      for (const event of await listJobEvents(id, cursor)) {
+        cursor = event.id;
+        reply.raw.write(`id: ${event.id}\nevent: job-stage\ndata: ${JSON.stringify(event)}\n\n`);
+      }
+    } catch (error) {
+      reply.raw.write(`event: error\ndata: ${JSON.stringify({ message: error instanceof Error ? error.message : String(error) })}\n\n`);
+    }
+  };
+  await flush();
+  const timer = setInterval(() => { if (active) void flush(); }, 1000);
+  const heartbeat = setInterval(() => { if (active) reply.raw.write(": keep-alive\n\n"); }, 15000);
+  request.raw.once("close", () => { active = false; clearInterval(timer); clearInterval(heartbeat); });
+});
+
+server.get("/api/repositories/:owner/:repo/compatibility", async (request, reply) => {
+  const { owner, repo } = request.params as { owner: string; repo: string };
+  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return reply.code(400).send({ error: "Invalid repository" });
+  const jobs = auth ? await (async () => {
+    const current = requireIdentity(request, reply);
+    return current ? listRepositoryJobsForUser(current.userId, owner, repo) : [];
+  })() : await listRepositoryJobs(owner, repo);
+  if (reply.sent) return;
+  const graph = buildCompatibilityGraph(`${owner}/${repo}`, jobs as CompatibilityJob[]);
+  return graph ?? reply.code(404).send({ error: "No completed validation snapshot exists for this repository" });
+});
+
+server.get("/api/repositories/:owner/:repo/recurrence", async (request, reply) => {
+  const { owner, repo } = request.params as { owner: string; repo: string };
+  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return reply.code(400).send({ error: "Invalid repository" });
+  const jobs = auth ? await (async () => {
+    const current = requireIdentity(request, reply);
+    return current ? listRepositoryJobsForUser(current.userId, owner, repo, 500) : [];
+  })() : await listRepositoryJobs(owner, repo, 500);
+  if (reply.sent) return;
+  return buildRecurrenceSnapshot(`${owner}/${repo}`, jobs as CompatibilityJob[]);
 });
 
 server.post("/api/action-results", { bodyLimit: 32 * 1024 * 1024 }, async (request, reply) => {

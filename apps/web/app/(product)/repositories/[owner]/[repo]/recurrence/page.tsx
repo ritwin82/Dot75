@@ -1,0 +1,13 @@
+import type {RecurrenceSnapshot} from "@localmesh/shared";
+import {apiFetch,githubSignInUrl} from "../../../../../lib/api";
+export const dynamic="force-dynamic";
+export default async function RecurrencePage({params}:{params:Promise<{owner:string;repo:string}>}){
+  const {owner,repo}=await params;let history:RecurrenceSnapshot|undefined;
+  try{const response=await apiFetch(`/api/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recurrence`);if(response.status===401)return <section className="contract-auth"><div className="product-kicker">Private recurrence evidence</div><h2>Sign in to open this history</h2><p>Repository access is verified against GitHub.</p><a className="primary-button" href={githubSignInUrl(`/repositories/${owner}/${repo}/recurrence`)}>Sign in with GitHub</a></section>;if(response.ok)history=await response.json();}catch{/* render unavailable state */}
+  if(!history)return <section className="not-found"><a className="product-link" href="/dashboard">Back to dashboard</a><h1>Recurrence history unavailable</h1><p>The validation API could not provide repository history.</p></section>;
+  return <div className="recurrence-page"><section className="compatibility-heading"><a className="product-link" href="/dashboard">Back to dashboard</a><div className="product-kicker">Conflict provenance over time</div><h1>Recurrence history</h1><p>{history.repository} · Stable fingerprints group the same database risk even when messages or commit SHAs change.</p></section>
+    <section className="recurrence-summary"><strong>{history.findings.length}</strong><span>distinct finding fingerprints</span><strong>{history.findings.filter((finding)=>finding.active).length}</strong><span>active in the latest PR results</span></section>
+    <section className="recurrence-list">{history.findings.map((finding)=><article key={finding.fingerprint} className={finding.active?"active":"resolved"}><div><span>{finding.active?"Active":"Historical"}</span><code>{finding.category}</code></div><h2>{finding.title}</h2><p><code>{finding.code}</code> · seen {finding.count} time(s) across {finding.pullRequests.map((pr)=>`PR #${pr}`).join(", ")}</p><p>First {new Date(finding.firstSeen).toLocaleString()} · latest {new Date(finding.lastSeen).toLocaleString()}</p><p className="fingerprint">{finding.fingerprint}</p>{finding.jobIds.at(-1)&&<a className="product-link" href={`/jobs/${finding.jobIds.at(-1)}`}>Open latest evidence</a>}</article>)}</section>
+    {!history.findings.length&&<p className="empty-inline">No findings have been recorded for this repository.</p>}
+  </div>;
+}

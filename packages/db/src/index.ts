@@ -21,12 +21,14 @@ export async function ensureSchema(): Promise<void> {
       source text NOT NULL DEFAULT 'github_app',
       external_id text,
       trigger text,
+      engine_version text NOT NULL DEFAULT '0.1.0',
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
     ALTER TABLE validation_jobs ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'github_app';
     ALTER TABLE validation_jobs ADD COLUMN IF NOT EXISTS external_id text;
     ALTER TABLE validation_jobs ADD COLUMN IF NOT EXISTS trigger text;
+    ALTER TABLE validation_jobs ADD COLUMN IF NOT EXISTS engine_version text NOT NULL DEFAULT '0.1.0';
     CREATE INDEX IF NOT EXISTS validation_jobs_repo_pr_idx
       ON validation_jobs(owner, repo, pr_number, created_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS validation_jobs_dedupe_idx
@@ -78,6 +80,16 @@ export async function ensureSchema(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS github_webhook_deliveries_received_idx
       ON github_webhook_deliveries(received_at);
+    CREATE TABLE IF NOT EXISTS job_events (
+      id bigserial PRIMARY KEY,
+      job_id uuid NOT NULL REFERENCES validation_jobs(id) ON DELETE CASCADE,
+      stage text NOT NULL,
+      state text NOT NULL,
+      message text NOT NULL,
+      details jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id);
   `);
 }
 
@@ -231,9 +243,9 @@ export async function listRepositoriesForUser(userId: number): Promise<unknown[]
 
 export async function saveJob(job: ValidationJob): Promise<boolean> {
   const result = await pool.query(
-    `INSERT INTO validation_jobs(id, installation_id, owner, repo, pr_number, head_sha, base_sha, check_run_id, trigger)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,
-    [job.id, job.installationId, job.owner, job.repo, job.prNumber, job.headSha, job.baseSha, job.checkRunId ?? null, job.trigger ?? null]
+    `INSERT INTO validation_jobs(id, installation_id, owner, repo, pr_number, head_sha, base_sha, check_run_id, trigger, engine_version)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
+    [job.id, job.installationId, job.owner, job.repo, job.prNumber, job.headSha, job.baseSha, job.checkRunId ?? null, job.trigger ?? null, job.engineVersion ?? "0.1.0"]
   );
   return result.rowCount === 1;
 }
@@ -258,13 +270,13 @@ export async function saveActionResults(repository: string, published: Published
       const query = await client.query(
         `INSERT INTO validation_jobs(
            id, installation_id, owner, repo, pr_number, head_sha, base_sha,
-           status, result, source, external_id
-         ) VALUES($1,$10,$2,$3,$4,$5,$6,$7,$8,'github_action',$9)
+           status, result, source, external_id, engine_version
+         ) VALUES($1,$10,$2,$3,$4,$5,$6,$7,$8,'github_action',$9,$11)
          ON CONFLICT (owner, repo, pr_number, head_sha, base_sha) DO UPDATE SET
            status=EXCLUDED.status, result=EXCLUDED.result, error=NULL,
            source='github_action', external_id=EXCLUDED.external_id, updated_at=now()
          RETURNING id`,
-        [id, owner, repo, result.currentPr, result.headSha, result.baseSha, result.status, JSON.stringify(result), item.externalId, installationId]
+        [id, owner, repo, result.currentPr, result.headSha, result.baseSha, result.status, JSON.stringify(result), item.externalId, installationId, result.provenance?.engineVersion ?? "0.1.0"]
       );
       saved.push({ id: String(query.rows[0].id), externalId: item.externalId });
     }
@@ -328,6 +340,56 @@ export async function listJobsForUser(userId: number, limit = 50): Promise<unkno
   return rows;
 }
 
+export async function listRepositoryJobs(owner: string, repo: string, limit = 200): Promise<unknown[]> {
+  const { rows } = await pool.query(
+    `SELECT id,owner,repo,pr_number AS "prNumber",head_sha AS "headSha",base_sha AS "baseSha",
+            status,result,error,source,external_id AS "externalId",created_at AS "createdAt",updated_at AS "updatedAt"
+     FROM validation_jobs WHERE lower(owner)=lower($1) AND lower(repo)=lower($2)
+     ORDER BY created_at DESC LIMIT $3`,
+    [owner, repo, Math.min(Math.max(limit, 1), 500)]
+  );
+  return rows;
+}
+
+export async function listRepositoryJobsForUser(userId: number, owner: string, repo: string, limit = 200): Promise<unknown[]> {
+  const { rows } = await pool.query(
+    `SELECT j.id,j.owner,j.repo,j.pr_number AS "prNumber",j.head_sha AS "headSha",j.base_sha AS "baseSha",
+            j.status,j.result,j.error,j.source,j.external_id AS "externalId",j.created_at AS "createdAt",j.updated_at AS "updatedAt"
+     FROM validation_jobs j WHERE lower(j.owner)=lower($2) AND lower(j.repo)=lower($3) AND EXISTS(
+       SELECT 1 FROM user_installations u
+       JOIN github_installations i ON i.id=u.installation_id AND i.status='active'
+       JOIN installation_repositories r ON r.installation_id=i.id AND r.active
+       WHERE u.user_id=$1 AND u.installation_id=j.installation_id
+         AND lower(r.owner)=lower(j.owner) AND lower(r.repo)=lower(j.repo)
+     ) ORDER BY j.created_at DESC LIMIT $4`,
+    [userId, owner, repo, Math.min(Math.max(limit, 1), 500)]
+  );
+  return rows;
+}
+
+export async function validationJobStatusCounts(): Promise<Array<{ status: string; count: string }>> {
+  const { rows } = await pool.query<{ status: string; count: string }>("SELECT status,count(*)::text count FROM validation_jobs GROUP BY status ORDER BY status");
+  return rows;
+}
+
+export async function databaseReady(): Promise<boolean> {
+  try { await pool.query("SELECT 1"); return true; }
+  catch { return false; }
+}
+
+export async function appendJobEvent(jobId: string, stage: string, state: string, message: string, details?: Record<string, unknown>): Promise<void> {
+  await pool.query("INSERT INTO job_events(job_id,stage,state,message,details) VALUES($1,$2,$3,$4,$5)", [jobId, stage, state, message, details ? JSON.stringify(details) : null]);
+}
+
+export async function listJobEvents(jobId: string, after = 0, limit = 200): Promise<Array<{ id: number; jobId: string; stage: string; state: string; message: string; details?: Record<string, unknown>; createdAt: string }>> {
+  const { rows } = await pool.query(
+    `SELECT id,job_id AS "jobId",stage,state,message,details,created_at AS "createdAt"
+     FROM job_events WHERE job_id=$1 AND id>$2 ORDER BY id LIMIT $3`,
+    [jobId, Math.max(0, after), Math.min(Math.max(limit, 1), 500)]
+  );
+  return rows.map((row) => ({ ...row, id: Number(row.id) }));
+}
+
 export async function getJob(id: string): Promise<unknown | null> {
   const { rows } = await pool.query(`SELECT * FROM validation_jobs WHERE id=$1`, [id]);
   return rows[0] ?? null;
@@ -349,7 +411,7 @@ export async function getJobForUser(id: string, userId: number): Promise<unknown
 }
 
 export async function loadJob(id: string): Promise<ValidationJob | null> {
-  const { rows } = await pool.query(`SELECT id, installation_id, owner, repo, pr_number, head_sha, base_sha, check_run_id, trigger FROM validation_jobs WHERE id=$1`, [id]);
+  const { rows } = await pool.query(`SELECT id, installation_id, owner, repo, pr_number, head_sha, base_sha, check_run_id, trigger, engine_version FROM validation_jobs WHERE id=$1`, [id]);
   const row=rows[0] as Record<string,unknown>|undefined; if(!row)return null;
-  return {id:String(row.id),installationId:Number(row.installation_id),owner:String(row.owner),repo:String(row.repo),prNumber:Number(row.pr_number),headSha:String(row.head_sha),baseSha:String(row.base_sha),...(row.check_run_id?{checkRunId:Number(row.check_run_id)}:{}),...(row.trigger?{trigger:String(row.trigger) as NonNullable<ValidationJob["trigger"]>}:{})};
+  return {id:String(row.id),installationId:Number(row.installation_id),owner:String(row.owner),repo:String(row.repo),prNumber:Number(row.pr_number),headSha:String(row.head_sha),baseSha:String(row.base_sha),engineVersion:String(row.engine_version??"0.1.0"),...(row.check_run_id?{checkRunId:Number(row.check_run_id)}:{}),...(row.trigger?{trigger:String(row.trigger) as NonNullable<ValidationJob["trigger"]>}:{})};
 }

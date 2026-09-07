@@ -5,12 +5,12 @@ const state = vi.hoisted(() => ({
   getTextFile: vi.fn(), installationClient: vi.fn(), listMigrations: vi.fn(), listSqlFiles: vi.fn(),
   discoverRevisionMigrations: vi.fn(), discoverMigrationPullRequests: vi.fn(), createDiskDiscoveryCache: vi.fn(),
   markCheckInfrastructureFailure: vi.fn(), markCheckRunning: vi.fn(), updateCheck: vi.fn(), upsertStickyComment: vi.fn(),
-  setJobStatus: vi.fn(), isJobCancelled: vi.fn(), runValidationInput: vi.fn(), explainWithOllama: vi.fn(),
+  setJobStatus: vi.fn(), isJobCancelled: vi.fn(), appendJobEvent: vi.fn(), runValidationInput: vi.fn(), explainWithOllama: vi.fn(),
   pullsGet: vi.fn(), calls: [] as string[]
 }));
 
 vi.mock("@localmesh/github", () => state);
-vi.mock("@localmesh/db", () => ({ setJobStatus: state.setJobStatus, isJobCancelled: state.isJobCancelled }));
+vi.mock("@localmesh/db", () => ({ setJobStatus: state.setJobStatus, isJobCancelled: state.isJobCancelled, appendJobEvent: state.appendJobEvent }));
 vi.mock("@localmesh/engine", () => ({
   parseValidationInput: (value: unknown) => value, runValidationInput: state.runValidationInput,
   validationPlanFromInput: (value: unknown) => value, explainWithOllama: state.explainWithOllama,

@@ -22,6 +22,7 @@ export default async function Detail({ params }: { params: Promise<{ id: string 
   try { job = await getJob(id); } catch (error) { return error instanceof Error && error.message === "AUTH_REQUIRED" ? <section className="not-found"><h1>GitHub sign-in required</h1><p>Sign in to view checks from repositories connected to your account.</p><a className="primary-button" href={`${process.env.PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100"}/auth/github`}>Continue with GitHub</a></section> : <section className="not-found"><h1>Unable to load this check</h1><p>The validation API is unavailable. Check the service deployment, then refresh this page.</p><a href="/dashboard">Back to dashboard</a></section>; }
   if (!job) return <section className="not-found"><h1>Check not found</h1><p>No validation exists at this address.</p><a href="/dashboard">Back to dashboard</a></section>;
   const r = job.result;
+  const publicApi = process.env.PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
   const ai = r?.explanation;
   const pending = r?.explanationStatus === "pending";
   const active = ["running", "queued"].includes(job.status);
@@ -47,7 +48,7 @@ export default async function Detail({ params }: { params: Promise<{ id: string 
         <div><strong>{r.orders.length}</strong><span>Execution orders tested</span></div>
         <div><strong>{r.comparedPullRequests.length}</strong><span>Related PRs compared</span></div>
         <div><strong>{r.scope?.contractMappings ?? "—"}</strong><span>Enabled contract mappings</span></div>
-        <div><strong>{ai?.source === "ollama" ? "Local AI" : pending ? "Preparing" : "Evidence"}</strong><span>{ai?.model ?? "Explanation source"}</span></div>
+        <div><strong>{r.groupCoverage?.tested.length ?? 0}</strong><span>Three-PR permutations</span></div>
       </section>
       <section className="ai-review" aria-labelledby="ai-heading">
         <div className="product-kicker">{ai?.source === "ollama" && !pending ? "Ollama explanation" : pending ? "Ollama is preparing an explanation" : "Explanation from recorded evidence"}</div>
@@ -70,16 +71,20 @@ export default async function Detail({ params }: { params: Promise<{ id: string 
           </div>)}</div>
         </section>
         <ResultFindings result={r}/>
+        <section className="detail-section"><h2>Fixture-state comparison</h2>{r.dataDifferences?.length ? <div className="data-difference-list">{r.dataDifferences.map((difference) => <article key={difference.table}><code>{difference.table}</code><p>{difference.table.startsWith("sequence:") ? "Sequence position differs between orders." : `${difference.first?.rowCount ?? "missing"} row(s) versus ${difference.second?.rowCount ?? "missing"} row(s).`} Fingerprints <code>{difference.first?.fingerprint.slice(0,12) ?? "missing"}</code> / <code>{difference.second?.fingerprint.slice(0,12) ?? "missing"}</code>.</p></article>)}</div> : <p className="section-help">No order-dependent fixture-state or sequence differences were recorded.</p>}</section>
         <section className="detail-section"><h2>Rollback checks</h2>{r.rollbacks.length ? r.rollbacks.map((rollback) => <div className="rollback-row" key={rollback.migration}><code>{rollback.migration}</code><strong>{rollback.status.replaceAll("_", " ")}</strong><p>Schema restored: {rollback.schemaRestored ? "yes" : "no"} · Fixture data restored: {rollback.dataRestored === undefined ? "not checked" : rollback.dataRestored ? "yes" : "no"}</p></div>) : <p className="section-help">No rollback results were recorded. This is not evidence that rollback is safe.</p>}</section>
       </div><aside className="detail-aside">
         <section className="side-section"><div className="product-kicker">Test coverage</div><h3>Scope of this result</h3>
           <p>Compared PRs: {r.comparedPullRequests.map((pr) => `#${pr}`).join(", ") || "none"}</p>
           <p>Skipped unrelated PRs: {r.scope ? r.scope.skippedPrs.map((pr) => `#${pr}`).join(", ") || "none" : "not recorded"}</p>
           <p>{r.scope?.fixtureFiles ?? "Unknown number of"} fixture file(s). Fixtures are test data, not production records.</p>
-          <p>Comparisons are pairwise with the current PR. All-PR permutations are not covered.</p>
+          <p>Related pairs are tested in both orders. Connected three-PR groups run within the configured permutation budget; remaining combinations stay explicitly untested.</p>
           {!r.scope?.contractMappings && <p>No enabled contract mappings were recorded. Contract coverage is not established.</p>}
+          <a className="product-link" href={`/repositories/${encodeURIComponent(job.owner)}/${encodeURIComponent(job.repo)}/compatibility`}>Open compatibility map</a>
         </section>
         <section className="side-section"><div className="product-kicker">Affected objects</div><h2>{r.affectedObjects.length}</h2><div className="objects">{r.affectedObjects.map((object) => <span className="object" key={object.id}>{object.id}</span>)}</div>{!r.affectedObjects.length && <p>No schema changes were measured. Data-only migrations can still change rows.</p>}</section>
+        <section className="side-section"><div className="product-kicker">Immutable provenance</div><h3>Compatibility receipt</h3><p>Base <code>{r.baseSha}</code></p><p>Head <code>{r.headSha}</code></p><p>Digest <code>{r.provenance?.inputDigest ?? "not recorded"}</code></p><p>Engine {r.provenance?.engineVersion ?? "not recorded"}</p></section>
+        <section className="side-section"><div className="product-kicker">Portable evidence</div><h3>Download this result</h3><div className="export-links">{(["json","markdown","sarif","junit"] as const).map((format)=><a className="product-link" key={format} href={`${publicApi}/api/jobs/${encodeURIComponent(job.id)}/export/${format}`}>{format.toUpperCase()}</a>)}</div></section>
         <section className="side-section"><h3>How to read this page</h3><p>Schema checks protect database structure. Data contracts protect business rules. Rollback checks measure whether an undo restores the starting state.</p></section>
       </aside></div>
     </>}
