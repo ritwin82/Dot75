@@ -27,10 +27,17 @@ export class PostgresValidationEnvironment {
   async stop(): Promise<void> { await this.container.stop(); }
 
   async withDatabase<T>(files:MigrationFile[],extensions:string[],callback:(pool:Pool)=>Promise<T>):Promise<T>{
-    const {pool}=await this.database(files,extensions); try{return await callback(pool);}finally{await pool.end();}
+    const {pool,name}=await this.database(files,extensions); try{return await callback(pool);}finally{await this.disposeDatabase(pool,name);}
   }
 
-  private async database(files: MigrationFile[], extensions: string[]): Promise<{ pool:Pool; before:SchemaSnapshot }> {
+  private async dropDatabase(name:string):Promise<void>{
+    const admin=new Pool({connectionString:this.adminUrl});
+    try{await admin.query(`DROP DATABASE IF EXISTS ${safeIdentifier(name)} WITH (FORCE)`);await admin.query(`DROP ROLE IF EXISTS ${safeIdentifier(name)}`);}finally{await admin.end();}
+  }
+
+  private async disposeDatabase(pool:Pool,name:string):Promise<void>{await pool.end();await this.dropDatabase(name);}
+
+  private async database(files: MigrationFile[], extensions: string[]): Promise<{ pool:Pool; before:SchemaSnapshot;name:string }> {
     const name = `lm_${randomUUID().replaceAll("-","")}`;
     const password=randomUUID().replaceAll("-","");
     const admin = new Pool({ connectionString:this.adminUrl });
@@ -42,12 +49,12 @@ export class PostgresValidationEnvironment {
     for (const extension of extensions) await pool.query(`CREATE EXTENSION IF NOT EXISTS ${safeIdentifier(extension)}`);
     for (const file of files.filter((f) => f.direction === "up").sort((a,b) => a.order-b.order || a.path.localeCompare(b.path))) await pool.query(file.sql);
     const client = await pool.connect();
-    try { return { pool, before:await inspectSchema(client) }; } finally { client.release(); }
-    } catch (error) { await pool.end(); throw error; }
+    try { return { pool, before:await inspectSchema(client),name }; } finally { client.release(); }
+    } catch (error) { await this.disposeDatabase(pool,name); throw error; }
   }
 
   async inspectChange(baseline: MigrationFile[], change: MigrationFile[], extensions: string[]): Promise<{ snapshot:SchemaSnapshot; affected:ReturnType<typeof diffObjects>; findings:Finding[] }> {
-    const { pool, before } = await this.database(baseline,extensions);
+    const { pool, before,name } = await this.database(baseline,extensions);
     const findings: Finding[] = [];
     try {
       for (const file of change.filter((f) => f.direction === "up").sort((a,b)=>a.order-b.order)) {
@@ -55,11 +62,11 @@ export class PostgresValidationEnvironment {
       }
       const client = await pool.connect();
       try { const snapshot=await inspectSchema(client); return { snapshot, affected:diffObjects(before,snapshot), findings }; } finally { client.release(); }
-    } finally { await pool.end(); }
+    } finally { await this.disposeDatabase(pool,name); }
   }
 
   async executeOrder(baseline:MigrationFile[], groups:{pr:number;files:MigrationFile[]}[], extensions:string[], options: { fixtures?: string[]; verify?: (pool: Pool, snapshot: SchemaSnapshot) => Promise<Finding[]>; compareDataState?: boolean; excludeDataColumns?: string[] } = {}):Promise<OrderResult> {
-    const started=Date.now(); const findings:Finding[]=[]; const {pool,before}=await this.database(baseline,extensions);
+    const started=Date.now(); const findings:Finding[]=[]; const {pool,before,name}=await this.database(baseline,extensions);
     try {
       for (const fixture of options.fixtures ?? []) await pool.query(fixture);
       outer: for (const group of groups) for (const file of group.files.filter((f)=>f.direction==="up").sort((a,b)=>a.order-b.order || a.path.localeCompare(b.path))) {
@@ -73,12 +80,12 @@ export class PostgresValidationEnvironment {
       const dataState = sqlPassed && options.compareDataState !== false ? await captureDataState(pool, options.excludeDataColumns) : undefined;
       return { order:groups.map((g)=>g.pr), passed:!findings.some((f)=>f.severity==="error"), sqlPassed, contractsChecked: sqlPassed && !!options.verify,
         findings, ...(sqlPassed ? {finalFingerprint:snapshot.fingerprint}:{}), ...(dataState ? {dataState}:{}), snapshot, affectedObjects: diffObjects(before, snapshot), durationMs:Date.now()-started };
-    } finally { await pool.end(); }
+    } finally { await this.disposeDatabase(pool,name); }
   }
 
   async verifyRollback(baseline:MigrationFile[], up:MigrationFile, down:MigrationFile|undefined, extensions:string[],fixtures:string[]=[],prior:MigrationFile[]=[]):Promise<RollbackResult> {
     if (!down) return { migration:up.path,status:"non_reversible",schemaRestored:false,findings:[{code:"NO_DOWN_MIGRATION",severity:"warning",title:"Migration is non-reversible",message:`No down migration is paired with ${up.path}.`,file:up.path}] };
-    const {pool}=await this.database(baseline,extensions); const findings=[...destructiveStatements(up)];
+    const {pool,name}=await this.database(baseline,extensions); const findings=[...destructiveStatements(up)];
     try {
       for(const fixture of fixtures)await pool.query(fixture);
       for(const file of prior.filter((file)=>file.direction==="up").sort((a,b)=>a.order-b.order || a.path.localeCompare(b.path)))await pool.query(file.sql);
@@ -91,7 +98,7 @@ export class PostgresValidationEnvironment {
       if(!dataRestored)findings.push({code:"ROLLBACK_DATA_MISMATCH",severity:"error",title:"Rollback did not restore fixture data",message:"Row hashes after rollback differ from the pre-migration fixture state.",file:down.path,evidence:{before:dataBefore,after:dataAfter}});
       const unsafe=findings.some((f)=>f.severity==="error" || f.code.startsWith("DROP_") || f.code==="TYPE_CONVERSION");
       return {migration:up.path,status:unsafe?"unsafe":"safe",schemaRestored:before.fingerprint===after.fingerprint,dataRestored,findings};
-    } finally {await pool.end();}
+    } finally {await this.disposeDatabase(pool,name);}
   }
 }
 
