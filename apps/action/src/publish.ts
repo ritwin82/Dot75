@@ -1,7 +1,7 @@
 import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
 import { getTextFile, updateCheck, upsertStickyComment } from "@localmesh/github";
-import type { ValidationResult } from "@localmesh/shared";
+import type { PublishedActionResult, ValidationResult } from "@localmesh/shared";
 import type { ActionEnvelope } from "./types.js";
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/i);
@@ -33,6 +33,7 @@ const envelopeSchema = z.object({ version: z.literal(1), repository: boundedText
   targets: z.array(z.object({ prNumber, headSha: sha, baseSha: sha, result: resultSchema })).max(2000), error: boundedText.optional() });
 
 export interface PublishContext { owner: string; repo: string; runId: number; runAttempt: number; workflowPath: string }
+export interface PublishOptions { onPublished?: (published: PublishedActionResult) => void | Promise<void> }
 interface TargetIdentity { prNumber: number; headSha: string; baseSha: string }
 
 function requireMatch(condition: unknown, message: string): asserts condition {
@@ -45,7 +46,7 @@ function failureResult(repository: string, target: TargetIdentity, runId: number
     contracts: [{ code: "ANALYSIS_INCOMPLETE", severity: "error", title: "Automatic migration validation did not complete", message }] };
 }
 
-export async function publishResults(octokit: Octokit, context: PublishContext, artifact: unknown): Promise<{ published: number; skipped: number }> {
+export async function publishResults(octokit: Octokit, context: PublishContext, artifact: unknown, options: PublishOptions = {}): Promise<{ published: number; skipped: number }> {
   // An artifact carries data only. No shell, SQL, or artifact-supplied code runs in this privileged process.
   let envelope = artifact === undefined ? undefined : envelopeSchema.parse(artifact) as ActionEnvelope;
   const { owner, repo, runId, runAttempt } = context;
@@ -166,6 +167,7 @@ export async function publishResults(octokit: Octokit, context: PublishContext, 
     // A workflow_run delivery retry must not append a second copy of annotations.
     if (!previous || previous.status !== "completed") await updateCheck(octokit, owner, repo, id, target.result);
     if (envelope.event === "pull_request") await upsertStickyComment(octokit, owner, repo, target.result);
+    await options.onPublished?.({ externalId, result: target.result });
     published++;
   }
   return { published, skipped };

@@ -3,9 +3,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { Octokit } from "@octokit/rest";
 import { createDiskDiscoveryCache, checkSummary } from "@localmesh/github";
-import type { ValidationJob, ValidationResult } from "@localmesh/shared";
+import type { PublishedActionResult, ValidationJob, ValidationResult } from "@localmesh/shared";
 import { eventTarget, prepareRun } from "./discover.js";
 import { publishResults } from "./publish.js";
+import { sendPlatformResults } from "./platform.js";
 import type { ActionEnvelope } from "./types.js";
 
 const argument = (name: string): string | undefined => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
@@ -37,7 +38,21 @@ async function main(): Promise<void> {
     const event = payload as { workflow_run?: { id: number; run_attempt: number; path: string }; repository?: { name: string; owner: { login: string } } };
     if (process.env.GITHUB_EVENT_NAME !== "workflow_run" || !event.workflow_run || !event.repository) throw new Error("Publication requires a workflow_run event.");
     const envelope = await readJson(required(argument("--results"), "--results")).catch(() => undefined);
-    await publishResults(octokit, { owner: event.repository.owner.login, repo: event.repository.name, runId: event.workflow_run.id, runAttempt: event.workflow_run.run_attempt, workflowPath: ".github/workflows/localmesh-analysis.yml" }, envelope);
+    const publishedResults: PublishedActionResult[] = [];
+    await publishResults(octokit, { owner: event.repository.owner.login, repo: event.repository.name, runId: event.workflow_run.id, runAttempt: event.workflow_run.run_attempt, workflowPath: ".github/workflows/localmesh-analysis.yml" }, envelope, {
+      onPublished: (published) => { publishedResults.push(published); }
+    });
+    const platformUrl = process.env.LOCALMESH_PLATFORM_URL?.trim();
+    const ingestionSecret = process.env.LOCALMESH_INGESTION_SECRET?.trim();
+    if (Boolean(platformUrl) !== Boolean(ingestionSecret)) throw new Error("Set both LOCALMESH_PLATFORM_URL and LOCALMESH_INGESTION_SECRET to enable dashboard ingestion.");
+    if (platformUrl && ingestionSecret && publishedResults.length) {
+      await sendPlatformResults(platformUrl, ingestionSecret, {
+        repository: `${event.repository.owner.login}/${event.repository.name}`,
+        runId: event.workflow_run.id,
+        runAttempt: event.workflow_run.run_attempt,
+        results: publishedResults
+      });
+    }
     return;
   }
   if (command !== "analyze") throw new Error("Usage: action analyze --cli <trusted-cli.js> --output-directory <dir> | publish --results <file>");

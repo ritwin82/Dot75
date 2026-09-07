@@ -54,12 +54,14 @@ beforeEach(() => {
 describe("privileged workflow result publication", () => {
   it("publishes a proven, fresh PR result and one sticky comment", async () => {
     const { mock, octokit } = client();
-    expect(await publishResults(octokit, context, envelope())).toEqual({ published: 1, skipped: 0 });
+    const onPublished = vi.fn();
+    expect(await publishResults(octokit, context, envelope(), { onPublished })).toEqual({ published: 1, skipped: 0 });
     expect(mock.checks.create).toHaveBeenCalledWith(expect.objectContaining({ head_sha: headSha, external_id: "localmesh:100:1:1" }));
     expect(updateCheck).toHaveBeenCalledWith(octokit, "owner", "repo", 500, expect.objectContaining({ currentPr: 1, headSha, baseSha }));
     expect(upsertStickyComment).toHaveBeenCalledTimes(1);
     expect(getTextFile).toHaveBeenCalledWith(octokit, "owner", "repo", context.workflowPath, headSha);
     expect(getTextFile).toHaveBeenCalledWith(octokit, "owner", "repo", context.workflowPath, "main");
+    expect(onPublished).toHaveBeenCalledWith({ externalId: "localmesh:100:1:1", result: expect.objectContaining({ currentPr: 1 }) });
   });
 
   it("rejects malformed artifacts and cross-repository identity before any API call", async () => {

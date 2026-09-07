@@ -15,7 +15,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Use a trusted self-hosted runner when LOCALMESH_PLATFORM_URL is reachable
+    # only on the local network. This job never executes pull request SQL.
+    runs-on: ${{ fromJSON(vars.LOCALMESH_PUBLISHER_RUNNER_JSON || '["ubuntu-latest"]') }}
     timeout-minutes: 10
     steps:
       - name: Validate trusted tool revision
@@ -53,4 +55,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RESULTS: ${{ runner.temp }}/localmesh-publication/localmesh-results.json
+          LOCALMESH_PLATFORM_URL: ${{ vars.LOCALMESH_PLATFORM_URL }}
+          LOCALMESH_INGESTION_SECRET: ${{ secrets.LOCALMESH_INGESTION_SECRET }}
         run: node localmesh-tool/apps/action/dist/index.js publish --results "$RESULTS"
