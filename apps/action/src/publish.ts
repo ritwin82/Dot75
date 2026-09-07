@@ -1,7 +1,7 @@
 import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
 import { getTextFile, updateCheck, upsertStickyComment } from "@localmesh/github";
-import type { PublishedActionResult, ValidationResult } from "@localmesh/shared";
+import { ENGINE_VERSION, type PublishedActionResult, type ValidationResult } from "@localmesh/shared";
 import type { ActionEnvelope } from "./types.js";
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/i);
@@ -11,7 +11,9 @@ const filePath = z.string().min(1).max(4096).refine((value) => !value.startsWith
 const finding = z.object({ code: boundedText, severity: z.enum(["info", "warning", "error"]), title: boundedText, message: boundedText,
   file: filePath.optional(), line: z.number().int().positive().optional(), evidence: z.record(z.string(), z.unknown()).optional() });
 const findings = z.array(finding).max(5000);
-const object = z.object({ id: boundedText, kind: z.enum(["table", "column", "constraint", "index", "view", "function", "trigger", "policy", "extension", "enum"]),
+const dataTableState = z.object({ table: boundedText, rowCount: z.number().int().nonnegative(), fingerprint: boundedText, sampleRows: z.array(z.record(z.string(), z.unknown())).max(5).optional() });
+const dataState = z.object({ fingerprint: boundedText, tables: z.array(dataTableState).max(20_000), sequences: z.array(z.object({ sequence: boundedText, lastValue: boundedText.optional(), isCalled: z.boolean() })).max(20_000).optional() });
+const object = z.object({ id: boundedText, kind: z.enum(["table", "partition", "column", "constraint", "index", "view", "materialized_view", "sequence", "domain", "composite", "function", "procedure", "trigger", "policy", "collation", "extension", "enum", "publication"]),
   schema: boundedText.optional(), relation: boundedText.optional(), name: boundedText, definition: boundedText });
 const resultSchema = z.object({
   jobId: boundedText, repository: boundedText, currentPr: prNumber, baseSha: sha, headSha: sha,
@@ -19,13 +21,19 @@ const resultSchema = z.object({
   affectedObjects: z.array(object).max(20_000), dependencies: z.array(z.object({ from: boundedText, to: boundedText, type: boundedText })).max(50_000),
   comparedPullRequests: z.array(prNumber).max(2000),
   orders: z.array(z.object({ order: z.array(prNumber).min(1).max(2000), passed: z.boolean(), findings,
-    durationMs: z.number().nonnegative(), sqlPassed: z.boolean().optional(), contractsChecked: z.boolean().optional(), finalFingerprint: boundedText.optional() })).max(10_000),
+    durationMs: z.number().nonnegative(), sqlPassed: z.boolean().optional(), contractsChecked: z.boolean().optional(), finalFingerprint: boundedText.optional(), dataState: dataState.optional() })).max(10_000),
   contracts: findings, performance: findings,
   rollbacks: z.array(z.object({ migration: boundedText, status: z.enum(["safe", "unsafe", "non_reversible"]), schemaRestored: z.boolean(), dataRestored: z.boolean().optional(), findings })).max(5000),
+  compatibility: z.array(z.object({ pullRequests: z.tuple([prNumber, prNumber]), status: z.enum(["compatible", "conflict", "order_sensitive", "independent", "standalone_invalid", "untested"]),
+    testedOrders: z.array(z.array(prNumber).max(2000)).max(2000), passingOrder: z.array(prNumber).max(2000).optional(), findingCodes: z.array(boundedText).max(5000), reason: boundedText,
+    sourceJobId: boundedText.optional(), observedAt: boundedText.optional() })).max(5000).optional(),
+  dataDifferences: z.array(z.object({ table: boundedText, first: dataTableState.optional(), second: dataTableState.optional() })).max(20_000).optional(),
+  groupCoverage: z.object({ tested: z.array(z.array(prNumber).max(3)).max(1000), untested: z.array(z.array(prNumber).max(3)).max(1000), permutationBudget: z.number().int().nonnegative() }).optional(),
   provenance: z.object({ pullRequests: z.array(z.object({ number: prNumber, author: boundedText, headSha: sha, title: boundedText.optional() })).max(2000),
     currentPrFiles: z.array(filePath).max(5000), trigger: boundedText.optional(), inputDigest: boundedText.optional(), engineVersion: boundedText.optional() }).optional(),
   scope: z.object({ candidatePrs: z.array(prNumber).max(2000), skippedPrs: z.array(prNumber).max(2000), contractMappings: z.number().int().nonnegative(), fixtureFiles: z.number().int().nonnegative(), rollbackChecked: z.boolean(),
-    decisions: z.array(z.object({ pr: prNumber, decision: z.enum(["tested", "skipped"]), reason: boundedText })).max(2000).optional() }).optional()
+    decisions: z.array(z.object({ pr: prNumber, decision: z.enum(["tested", "skipped"]), reason: boundedText })).max(2000).optional() }).optional(),
+  links: z.object({ check: boundedText.optional(), investigation: boundedText.optional(), replay: boundedText.optional() }).optional()
 });
 
 const envelopeSchema = z.object({ version: z.literal(1), repository: boundedText, runId: z.number().int().positive(), runAttempt: z.number().int().positive(),
@@ -142,6 +150,8 @@ export async function publishResults(octokit: Octokit, context: PublishContext, 
     else requireMatch(target.prNumber > 0, "PR publication requires a positive PR number.");
     if (target.result.status === "passed") {
       requireMatch(target.result.provenance && target.result.scope, "a passing artifact is missing discovery provenance or validation coverage.");
+      requireMatch(target.result.provenance.engineVersion === ENGINE_VERSION, "the artifact engine version does not match this reviewed publisher.");
+      requireMatch(/^[a-f0-9]{64}$/i.test(target.result.provenance.inputDigest ?? ""), "the passing artifact is missing a valid compatibility receipt digest.");
       requireMatch(target.result.provenance.pullRequests.some((pr) => pr.number === target.prNumber && pr.headSha === target.headSha), "the passing artifact does not identify the checked head.");
       requireMatch(target.result.comparedPullRequests.every((number) => target.result.provenance!.pullRequests.some((pr) => pr.number === number)), "a compared PR is missing its tested head.");
       requireMatch(target.result.orders.length > 0 || target.result.provenance.currentPrFiles.length === 0, "migration files were reported without any recorded execution.");
@@ -163,7 +173,9 @@ export async function publishResults(octokit: Octokit, context: PublishContext, 
     const externalId = `localmesh:${runId}:${runAttempt}:${target.prNumber}`;
     const { data: existing } = await octokit.checks.listForRef({ owner, repo, ref: target.headSha, check_name: "LocalMesh Sensei", filter: "latest", per_page: 100 });
     const previous = existing.check_runs.find((check) => check.external_id === externalId && check.app?.slug === "github-actions");
-    const id = previous?.id ?? (await octokit.checks.create({ owner, repo, name: "LocalMesh Sensei", head_sha: target.headSha, external_id: externalId, status: "queued" })).data.id;
+    const created = previous ?? (await octokit.checks.create({ owner, repo, name: "LocalMesh Sensei", head_sha: target.headSha, external_id: externalId, status: "queued" })).data;
+    const id = created.id;
+    target.result.links = { ...target.result.links, check: created.html_url ?? `${(process.env.GITHUB_SERVER_URL ?? "https://github.com").replace(/\/$/, "")}/${owner}/${repo}/runs/${id}` };
     // A workflow_run delivery retry must not append a second copy of annotations.
     if (!previous || previous.status !== "completed") await updateCheck(octokit, owner, repo, id, target.result);
     if (envelope.event === "pull_request") await upsertStickyComment(octokit, owner, repo, target.result);

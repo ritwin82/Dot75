@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Octokit } from "@octokit/rest";
-import type { ValidationResult } from "@localmesh/shared";
+import { ENGINE_VERSION, type ValidationResult } from "@localmesh/shared";
 import { getTextFile, updateCheck, upsertStickyComment } from "@localmesh/github";
 import { publishResults } from "./publish.js";
 import type { ActionEnvelope } from "./types.js";
@@ -15,7 +15,7 @@ function result(): ValidationResult {
   return { jobId: "job", repository: "owner/repo", currentPr: 1, baseSha, headSha, status: "passed", startedAt: "2026-09-07T00:00:00Z",
     affectedObjects: [], dependencies: [], comparedPullRequests: [], contracts: [], rollbacks: [], performance: [],
     orders: [{ order: [1], passed: true, sqlPassed: true, durationMs: 1, findings: [] }],
-    provenance: { currentPrFiles: ["migrations/002_status.up.sql"], pullRequests: [{ number: 1, author: "alice", headSha }] },
+    provenance: { currentPrFiles: ["migrations/002_status.up.sql"], pullRequests: [{ number: 1, author: "alice", headSha }], inputDigest: "d".repeat(64), engineVersion: ENGINE_VERSION },
     scope: { candidatePrs: [], skippedPrs: [], contractMappings: 0, fixtureFiles: 0, rollbackChecked: false } };
 }
 
