@@ -4,6 +4,23 @@ LocalMesh Sensei finds PostgreSQL migration conflicts that Git cannot see. It ex
 
 AI is optional. When Ollama is available it explains verified failures and proposes safer SQL, but it never decides whether a check passes.
 
+## Automatic checks and reproducible evidence
+
+LocalMesh now supports a thin GitHub Action as an alternative to the webhook service. It discovers other open migration PRs by immutable SHA, invokes the same validation engine through a portable JSON CLI, and publishes detailed Checks and a sticky PR comment. Default-branch pushes refresh open migration PRs without comment notifications; merge queues validate the full cumulative group.
+
+Start with the [architecture, Action setup, reporting guide, and prioritized roadmap](docs/architecture-and-action.md). Copy the [analysis workflow](examples/github-actions/localmesh-analysis.yml) and [publication workflow](examples/github-actions/localmesh-publication.yml) into a consuming repository and configure a reviewed tool SHA. They are templates and are not enabled automatically in this checkout.
+
+The Action route needs no webhook server, GitHub App key, service database, or inbound port. Its sample uses isolated analysis and a separate publisher. A local runner can use the same route, provided its isolation is appropriate for every PR it might analyze, including other open fork PRs.
+
+Replay a saved input without GitHub access:
+
+```bash
+pnpm --filter @localmesh/worker... build
+pnpm localmesh validate --input input-41.json --output result-41.json
+```
+
+Every new result carries the exact tested revisions, coverage decisions, and a SHA-256 input receipt. AI remains optional and cannot change the verdict.
+
 ## What the MVP does
 
 - Rebuilds the target branch in the configured PostgreSQL 14–17 image.
@@ -20,6 +37,7 @@ AI is optional. When Ollama is available it explains verified failures and propo
 
 | Component | Responsibility |
 |---|---|
+| `apps/action` | GitHub Action discovery, CLI invocation, provenance-checked publication |
 | `apps/api` | Signed GitHub webhooks, Check creation, job API, durable queue |
 | `apps/worker` | GitHub revision loading, PostgreSQL containers, validation orchestration |
 | `apps/web` | Job overview and detailed review dashboard |
@@ -30,7 +48,7 @@ AI is optional. When Ollama is available it explains verified failures and propo
 
 The service metadata is stored in PostgreSQL and jobs are delivered through `pg-boss`. Each validation job receives an ephemeral PostgreSQL container. Repository contents are read using short-lived GitHub App installation credentials; no production records are copied.
 
-## Prerequisites
+## Webhook service prerequisites
 
 - Node.js 22 or newer and pnpm 10 or newer.
 - Docker Engine with permission to start sibling PostgreSQL containers.
@@ -38,7 +56,7 @@ The service metadata is stored in PostgreSQL and jobs are delivered through `pg-
 - Optional: Ollama and `qwen2.5-coder:7b`.
 - For a service running on a developer machine, an HTTPS webhook endpoint such as Cloudflare Tunnel.
 
-## Setup
+## Webhook service setup
 
 1. Install dependencies:
 
