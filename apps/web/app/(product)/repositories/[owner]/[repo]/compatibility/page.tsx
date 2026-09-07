@@ -29,6 +29,14 @@ export default async function CompatibilityPage({ params }: { params: Promise<{ 
       <h1>Compatibility map</h1><p>{graph.repository} at base <code>{graph.baseSha.slice(0, 12)}</code>. Every colored relationship is backed by a stored PostgreSQL validation.</p>
     </section>
     <section className="compatibility-metrics" aria-label="Compatibility coverage"><Metric value={graph.nodes.length} label="Observed PRs"/><Metric value={graph.edges.filter((edge) => edge.status === "conflict").length} label="Conflicts" tone="conflict"/><Metric value={graph.edges.filter((edge) => edge.status === "order_sensitive").length} label="Order-sensitive" tone="order_sensitive"/><Metric value={`${graph.coverage.classifiedPairs}/${graph.coverage.possiblePairs}`} label="Pairs classified"/></section>
+    <section className="map-guide" aria-labelledby="map-guide-heading"><div><div className="product-kicker">How this feature helps</div><h2 id="map-guide-heading">Read every open PR relationship at a glance</h2><p>Each PR is a node. A line appears only after Dot75 has replayed the pair in PostgreSQL. Select a node or relationship to open the stored evidence.</p></div><div className="map-guide-grid">
+      <article><i className="compatible"/><strong>Compatible</strong><p>Both PRs passed alone and together in every tested order.</p></article>
+      <article><i className="conflict"/><strong>Conflict</strong><p>Each PR may work alone, but the pair cannot be merged safely in either order.</p></article>
+      <article><i className="order_sensitive"/><strong>Order-sensitive</strong><p>One sequence passed. The arrow points toward the verified application order.</p></article>
+      <article><i className="independent"/><strong>Independent</strong><p>Inspected objects and dependencies do not overlap, so the pair was safely skipped.</p></article>
+      <article><i className="standalone_invalid"/><strong>Invalid alone</strong><p>At least one PR already fails without another PR, so pair safety cannot be claimed.</p></article>
+      <article><i className="untested"/><strong>Untested</strong><p>No complete stored evidence exists yet. Dot75 never turns missing evidence into a pass.</p></article>
+    </div></section>
     <div className="map-legend" aria-label="Relationship legend">{Object.entries(labels).map(([status, label]) => <span key={status} className={`legend-${status}`}><i/>{label}</span>)}</div>
     <section className="compatibility-map" aria-label={`Compatibility graph for ${graph.repository}`}>
       <svg viewBox="0 0 1000 620" role="img" aria-label="Pull request relationship lines">
