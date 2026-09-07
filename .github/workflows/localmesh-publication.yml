@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: ritwin82/Dot75
-          ref: 075faefe55cf27e10875b2031b31198105f1a842
+          ref: 42ff9f1734985b16c7c1a64c2f18689dd314a2f5
           path: localmesh-tool
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
