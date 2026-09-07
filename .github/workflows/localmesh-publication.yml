@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64, localmesh-publisher]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -27,7 +27,7 @@ jobs:
           node-version: '22'
       - name: Build trusted publisher
         working-directory: localmesh-tool
-        shell: bash
+        shell: pwsh
         run: |
           npm install --global pnpm@10.15.1 --ignore-scripts
           pnpm install --frozen-lockfile --ignore-scripts
@@ -42,8 +42,10 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
       - name: Verify provenance and publish to GitHub
-        shell: bash
+        shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          RESULTS: ${{ runner.temp }}/localmesh-publication/localmesh-results.json
-        run: node localmesh-tool/apps/action/dist/index.js publish --results "$RESULTS"
+          RESULTS: ${{ runner.temp }}\localmesh-publication\localmesh-results.json
+          LOCALMESH_PLATFORM_URL: http://127.0.0.1:4100
+          LOCALMESH_INGESTION_SECRET: ${{ secrets.LOCALMESH_INGESTION_SECRET }}
+        run: node localmesh-tool/apps/action/dist/index.js publish --results "$env:RESULTS"
